@@ -1,6 +1,7 @@
--- using 1720730886 as a seed to the RNG
+-- using 1720735365 as a seed to the RNG
 
 
+where rownum <= 100;
 select
 	c_name,
 	c_custkey,
@@ -20,7 +21,7 @@ where
 			lineitem
 		group by
 			l_orderkey having
-				sum(l_quantity) > 313
+				sum(l_quantity) > 314
 	)
 	and c_custkey = o_custkey
 	and o_orderkey = l_orderkey
@@ -33,4 +34,3 @@ group by
 order by
 	o_totalprice desc,
 	o_orderdate;
-where rownum <= 100;

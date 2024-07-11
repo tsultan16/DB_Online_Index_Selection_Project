@@ -1,16 +1,16 @@
--- using 1720730876 as a seed to the RNG
+-- using 1720735356 as a seed to the RNG
 
 
 select
 	o_year,
 	sum(case
-		when nation = 'IRAQ' then volume
+		when nation = 'CHINA' then volume
 		else 0
 	end) / sum(volume) as mkt_share
 from
 	(
 		select
-			extract(year from o_orderdate) as o_year,
+			YEAR(o_orderdate) as o_year,
 			l_extendedprice * (1 - l_discount) as volume,
 			n2.n_name as nation
 		from
@@ -29,13 +29,12 @@ from
 			and o_custkey = c_custkey
 			and c_nationkey = n1.n_nationkey
 			and n1.n_regionkey = r_regionkey
-			and r_name = 'MIDDLE EAST'
+			and r_name = 'ASIA'
 			and s_nationkey = n2.n_nationkey
-			and o_orderdate between date '1995-01-01' and date '1996-12-31'
-			and p_type = 'LARGE POLISHED STEEL'
+			and o_orderdate between CAST('1995-01-01' AS date) and CAST('1996-12-31' AS date)
+			and p_type = 'STANDARD BURNISHED BRASS'
 	) as all_nations
 group by
 	o_year
 order by
 	o_year;
-where rownum <= -1;

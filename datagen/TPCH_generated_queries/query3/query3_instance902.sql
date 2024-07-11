@@ -1,6 +1,7 @@
--- using 1720730872 as a seed to the RNG
+-- using 1720735352 as a seed to the RNG
 
 
+where rownum <= 10;
 select
 	l_orderkey,
 	sum(l_extendedprice * (1 - l_discount)) as revenue,
@@ -11,11 +12,11 @@ from
 	orders,
 	lineitem
 where
-	c_mktsegment = 'FURNITURE'
+	c_mktsegment = 'BUILDING'
 	and c_custkey = o_custkey
 	and l_orderkey = o_orderkey
-	and o_orderdate < date '1995-03-01'
-	and l_shipdate > date '1995-03-01'
+	and o_orderdate < CAST('1995-03-25' AS date)
+	and l_shipdate > CAST('1995-03-25' AS date)
 group by
 	l_orderkey,
 	o_orderdate,
@@ -23,4 +24,3 @@ group by
 order by
 	revenue desc,
 	o_orderdate;
-where rownum <= 10;

@@ -1,4 +1,4 @@
--- using 1720730870 as a seed to the RNG
+-- using 1720735349 as a seed to the RNG
 
 
 select
@@ -15,11 +15,10 @@ select
 from
 	lineitem
 where
-	l_shipdate <= date '1998-12-01' - interval '98' day (3)
+	l_shipdate <= DATEADD(dd, -108, CAST('1998-12-01' AS date))
 group by
 	l_returnflag,
 	l_linestatus
 order by
 	l_returnflag,
 	l_linestatus;
-where rownum <= -1;

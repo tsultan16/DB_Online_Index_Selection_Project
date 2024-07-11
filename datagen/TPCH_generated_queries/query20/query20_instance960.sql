@@ -1,4 +1,4 @@
--- using 1720730888 as a seed to the RNG
+-- using 1720735368 as a seed to the RNG
 
 
 select
@@ -20,7 +20,7 @@ where
 				from
 					part
 				where
-					p_name like 'midnight%'
+					p_name like 'spring%'
 			)
 			and ps_availqty > (
 				select
@@ -30,12 +30,11 @@ where
 				where
 					l_partkey = ps_partkey
 					and l_suppkey = ps_suppkey
-					and l_shipdate >= date '1993-01-01'
-					and l_shipdate < date '1993-01-01' + interval '1' year
+					and l_shipdate >= CAST('1997-01-01' AS date)
+					and l_shipdate < DATEADD(yy, 1, CAST('1997-01-01' AS date))
 			)
 	)
 	and s_nationkey = n_nationkey
-	and n_name = 'MOZAMBIQUE'
+	and n_name = 'GERMANY'
 order by
 	s_name;
-where rownum <= -1;

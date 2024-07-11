@@ -1,4 +1,4 @@
--- using 1720730887 as a seed to the RNG
+-- using 1720735367 as a seed to the RNG
 
 
 select
@@ -20,7 +20,7 @@ where
 				from
 					part
 				where
-					p_name like 'burnished%'
+					p_name like 'lemon%'
 			)
 			and ps_availqty > (
 				select
@@ -30,12 +30,11 @@ where
 				where
 					l_partkey = ps_partkey
 					and l_suppkey = ps_suppkey
-					and l_shipdate >= date '1995-01-01'
-					and l_shipdate < date '1995-01-01' + interval '1' year
+					and l_shipdate >= CAST('1994-01-01' AS date)
+					and l_shipdate < DATEADD(yy, 1, CAST('1994-01-01' AS date))
 			)
 	)
 	and s_nationkey = n_nationkey
-	and n_name = 'BRAZIL'
+	and n_name = 'PERU'
 order by
 	s_name;
-where rownum <= -1;

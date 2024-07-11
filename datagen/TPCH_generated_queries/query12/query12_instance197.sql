@@ -1,4 +1,4 @@
--- using 1720730880 as a seed to the RNG
+-- using 1720735360 as a seed to the RNG
 
 
 select
@@ -20,13 +20,12 @@ from
 	lineitem
 where
 	o_orderkey = l_orderkey
-	and l_shipmode in ('AIR', 'RAIL')
+	and l_shipmode in ('SHIP', 'REG AIR')
 	and l_commitdate < l_receiptdate
 	and l_shipdate < l_commitdate
-	and l_receiptdate >= date '1997-01-01'
-	and l_receiptdate < date '1997-01-01' + interval '1' year
+	and l_receiptdate >= CAST('1997-01-01' AS date)
+	and l_receiptdate < DATEADD(yy, 1, CAST('1997-01-01' AS date))
 group by
 	l_shipmode
 order by
 	l_shipmode;
-where rownum <= -1;

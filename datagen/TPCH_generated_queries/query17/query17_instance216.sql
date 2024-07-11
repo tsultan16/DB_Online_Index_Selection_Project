@@ -1,4 +1,4 @@
--- using 1720730884 as a seed to the RNG
+-- using 1720735365 as a seed to the RNG
 
 
 select
@@ -8,8 +8,8 @@ from
 	part
 where
 	p_partkey = l_partkey
-	and p_brand = 'Brand#44'
-	and p_container = 'MED BAG'
+	and p_brand = 'Brand#24'
+	and p_container = 'WRAP CAN'
 	and l_quantity < (
 		select
 			0.2 * avg(l_quantity)
@@ -18,4 +18,3 @@ where
 		where
 			l_partkey = p_partkey
 	);
-where rownum <= -1;

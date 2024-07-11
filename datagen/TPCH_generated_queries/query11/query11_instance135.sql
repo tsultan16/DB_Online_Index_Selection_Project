@@ -1,4 +1,4 @@
--- using 1720730879 as a seed to the RNG
+-- using 1720735359 as a seed to the RNG
 
 
 select
@@ -28,4 +28,3 @@ group by
 		)
 order by
 	value desc;
-where rownum <= -1;

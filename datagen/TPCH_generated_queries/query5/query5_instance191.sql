@@ -1,4 +1,4 @@
--- using 1720730873 as a seed to the RNG
+-- using 1720735353 as a seed to the RNG
 
 
 select
@@ -18,11 +18,10 @@ where
 	and c_nationkey = s_nationkey
 	and s_nationkey = n_nationkey
 	and n_regionkey = r_regionkey
-	and r_name = 'MIDDLE EAST'
-	and o_orderdate >= date '1995-01-01'
-	and o_orderdate < date '1995-01-01' + interval '1' year
+	and r_name = 'EUROPE'
+	and o_orderdate >= CAST('1994-01-01' AS date)
+	and o_orderdate < DATEADD(yy, 1, CAST('1994-01-01' AS date))
 group by
 	n_name
 order by
 	revenue desc;
-where rownum <= -1;
