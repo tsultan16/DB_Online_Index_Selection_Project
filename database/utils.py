@@ -727,37 +727,43 @@ def drop_noncluster_index_object(connection, index, schema_name='dbo', verbose=F
 """
 
 # create hypothetical indexes for a given set of indexes
-def create_hypothetical_indexes(connection, indexes):
+def create_hypothetical_indexes(connection, indexes, schema_name='dbo', verbose=False):
     est_index_creation_cost = None
-    try:
-        cursor = connection.cursor()
-        for index in indexes:
+
+    cursor = connection.cursor()
+    for index in indexes:
+        try:
             index_id = index.index_id
             table_name = index.table_name
             index_columns = index.index_columns
             include_columns = index.include_columns
 
-            create_index_query = f"""
-            CREATE NONCLUSTERED INDEX {index_id} 
-            ON {table_name} ({', '.join(index_columns)})
-            INCLUDE ({', '.join(include_columns)})
-            WITH STATISTICS_ONLY
-            """
-            cursor.execute(create_index_query)
-        connection.commit()
+            if include_columns:
+                query = f"CREATE NONCLUSTERED INDEX {index_id} ON {schema_name}.{table_name} ({', '.join(index_columns)}) " \
+                        f"INCLUDE ({', '.join(include_columns)}) WITH STATISTICS_ONLY = -1"
+            else:
+                query = f"CREATE NONCLUSTERED INDEX {index_id} ON {schema_name}.{table_name} ({', '.join(index_columns)}) " \
+                        f"WITH STATISTICS_ONLY = -1"
 
-        # Note: cost estimation currently not implemented...
+            cursor.execute(query)
+            connection.commit()
+            if verbose:
+                print(f"Created hypothetical index --> [{table_name}].[{index_id}]")
 
-    except Exception as e:
-        print(f"Error creating hypothetical indexes: {e}")
-    finally:
-        cursor.close()   
+            # Note: cost estimation currently not implemented...
 
-    return est_index_creation_cost     
+
+        except Exception as e:
+            print(f"Error creating hypothetical index {index_id}: {e}")
+            # Continue to the next index if an error occurs
+            continue
+
+    cursor.close()
+    return est_index_creation_cost
 
 
 # drop all hypothetical indexes in the database
-def drop_all_hypothetical_indexes(connection):
+def drop_all_hypothetical_indexes(connection, verbose=False):
     cursor = connection.cursor()
     try:
         # first identify all hypothetical indexes
@@ -781,7 +787,8 @@ def drop_all_hypothetical_indexes(connection):
             index_name = index[2]
             drop_query = f"DROP INDEX {schema_name}.{table_name}.{index_name}"
             cursor.execute(drop_query)
-            print(f"Dropped hypothetical index: {schema_name}.{table_name}.{index_name}")        
+            if verbose: 
+                print(f"Dropped hypothetical index: {schema_name}.{table_name}.{index_name}")        
         connection.commit()
     
     except Exception as e:
@@ -789,8 +796,9 @@ def drop_all_hypothetical_indexes(connection):
     finally:
         cursor.close()    
 
+
 # enable all the hypothetical indexes so that they will be considered by optimizer when generating query plans for future queries
-def enable_all_hypothetical_indexes(connection):
+def enable_all_hypothetical_indexes(connection, verbose=False):
     query = '''SELECT dbid = Db_id(),
                           objectid = object_id,
                           indid = index_id
@@ -801,6 +809,7 @@ def enable_all_hypothetical_indexes(connection):
         cursor.execute(query)
         result_rows = cursor.fetchall()
         for result_row in result_rows:
+            if verbose: print(f"Enabling hypothetical index: {result_row}")
             query_2 = f"DBCC AUTOPILOT(0, {result_row[0]}, {result_row[1]}, {result_row[2]})"
             cursor.execute(query_2)
         connection.commit()
@@ -811,7 +820,7 @@ def enable_all_hypothetical_indexes(connection):
 
 
 # disable sepcified indexes in the database, these won't be considered by the optimizer when generating query plans for future queries
-def disable_indexes(connection, indexes_to_disable):
+def disable_indexes(connection, indexes_to_disable, verbose=False):
     try:
         cursor = connection.cursor()
         for index in indexes_to_disable:
@@ -819,6 +828,9 @@ def disable_indexes(connection, indexes_to_disable):
             table_name = index.table_name
             disable_query = f"ALTER INDEX {index_id} ON {table_name} DISABLE"
             cursor.execute(disable_query)
+            if verbose:
+                print(f"Disabled index: {index_id}")
+
         connection.commit()
     except Exception as e:
         print(f"Error disabling indexes: {e}")
@@ -827,7 +839,7 @@ def disable_indexes(connection, indexes_to_disable):
 
 
 # re-enable the indexes that were previously disabled
-def re_enable_indexes(connection, indexes_to_enable):
+def re_enable_indexes(connection, indexes_to_enable, verbose=False):
     try:
         cursor = connection.cursor()
         for index in indexes_to_enable:
@@ -835,6 +847,8 @@ def re_enable_indexes(connection, indexes_to_enable):
             table_name = index.table_name
             enable_query = f"ALTER INDEX {index_id} ON {table_name} REBUILD"
             cursor.execute(enable_query)
+            if verbose:
+                print(f"Re-enabled index: {index_id}")
         connection.commit()
     except Exception as e:
         print(f"Error enabling indexes: {e}")
@@ -843,8 +857,8 @@ def re_enable_indexes(connection, indexes_to_enable):
 
 
 # hypothetically execute a query in the hypothetical configuration and estimate the cost
-def hypothetical_execute_query(connection, query):
-    enable_all_hypothetical_indexes(connection)
+def hypothetical_execute_query(connection, query, verbose=False):
+    enable_all_hypothetical_indexes(connection, verbose=verbose)
     cursor = connection.cursor()
     try:
         cursor.execute("SET AUTOPILOT ON")
@@ -860,21 +874,36 @@ def hypothetical_execute_query(connection, query):
     finally:
         cursor.close()
 
+# estimate the cost of executing a query in the current configuration from the query plan
+def estimate_query_cost(connection, query, cost_type='elapsed_time'):
+    cursor = connection.cursor()        
+    try:
+        cursor.execute("SET SHOWPLAN_XML ON")
+        cursor.execute(query)
+        stat_xml = cursor.fetchone()[0]
+        cursor.execute("SET SHOWPLAN_XML OFF")
+        query_plan = QueryPlan(stat_xml)
+        return float(query_plan.est_statement_sub_tree_cost), query_plan.non_clustered_index_usage, query_plan.clustered_index_usage    
+    except Exception as e:
+        print(f"Error estimating query cost: {e}")
+        return None, None, None
+        
 
 # estimate the cost of executing a query in a hypothetical configuration
-def hypothetical_configuration_cost_estimate(connection, indexes_added, indexes_removed, query):
+def hyp_configuration_cost_estimate(connection, indexes_added, indexes_removed, query, verbose=False):
+    original_execution_cost, non_clustered_index_usage, clustered_index_usage = estimate_query_cost(connection, query)
     # create hypothetical indexes
-    index_creation_cost = create_hypothetical_indexes(connection, indexes_added)
+    hyp_index_creation_cost = create_hypothetical_indexes(connection, indexes_added, verbose=verbose)
     # disable removed indexes
-    disable_indexes(connection, indexes_removed)
+    disable_indexes(connection, indexes_removed, verbose=verbose)
     # execute query in hypothetical configuration
-    execution_cost, non_clustered_index_usage, clustered_index_usage = hypothetical_execute_query(connection, query)
+    hyp_execution_cost, non_clustered_index_usage, clustered_index_usage = hypothetical_execute_query(connection, query, verbose=verbose)
     # drop hypothetical indexes
-    drop_all_hypothetical_indexes(connection)
+    drop_all_hypothetical_indexes(connection, verbose=verbose)
     # re-enable oreviously disabled indexes
-    re_enable_indexes(connection, indexes_removed)
+    re_enable_indexes(connection, indexes_removed, verbose=verbose)
     
-    return execution_cost, non_clustered_index_usage, clustered_index_usage
+    return original_execution_cost, hyp_execution_cost, hyp_index_creation_cost
     
 
 
