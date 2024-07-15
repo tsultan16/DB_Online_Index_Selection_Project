@@ -587,7 +587,7 @@ def get_all_columns(connection):
     return columns, num_columns
 
 
-
+# assign a unique id to a given index
 def get_index_id(index_cols, table_name, include_cols=()):
     if include_cols:
         include_col_names = '_'.join(tuple(map(lambda x: x[0:4], include_cols))).lower()
@@ -660,10 +660,64 @@ def get_max_column_data_size(connection, table_name, columns):
     return column_data_size
 
 
+# create a non-clustered index for given index object
+def create_nonclustered_index_object(connection, index, schema_name='dbo', cost_type='elapsed_time', verbose=False):
+    index_id = index.index_id
+    table_name = index.table_name
+    index_columns = index.index_columns
+    include_columns = index.include_columns 
+
+    if include_columns:
+        query = f"""
+                CREATE NONCLUSTERED INDEX {index_id}
+                ON {schema_name}.{table_name} ({', '.join(index_columns)})
+                INCLUDE ({', '.join(include_columns)})
+                """
+    else:
+        query = f"""
+                CREATE NONCLUSTERED INDEX {index_id}
+                ON {schema_name}.{table_name} ({', '.join(index_columns)})
+                """
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SET STATISTICS XML ON")
+        cursor.execute(query)
+        stat_xml = cursor.fetchone()[0]
+        cursor.execute("SET STATISTICS XML OFF")
+        connection.commit()
+        if verbose:
+            print(f"Created index --> {table_name}.{index_id}, Indexed Columns --> {index_columns}, Included Columns --> {include_columns}")
+        query_plan = QueryPlan(stat_xml)
+        if cost_type == 'elapsed_time':
+            cost = query_plan.elapsed_time
+        elif cost_type == 'cpu_time':
+            cost = query_plan.cpu_time
+        else:
+            cost = query_plan.est_statement_sub_tree_cost
+    
+    except pyodbc.Error as e:
+        print(f"Error creating index {index_id}: {e}")
+        cost = 0
+    finally:
+        cursor.close() 
+
+    return cost           
 
 
-
-
+# drop non-clustered index for given index object
+def drop_noncluster_index_object(connection, index, schema_name='dbo'):
+    index_id = index.index_id
+    table_name = index.table_name
+    query = f"DROP INDEX {schema_name}.{table_name}.{index_id}"
+    cursor = connection.cursor()
+    try:
+        cursor.execute(query)
+        connection.commit()
+    except pyodbc.Error as e:
+        print(f"Error dropping index {index_id}: {e}")
+    finally:
+        cursor.close()
 
 
 
