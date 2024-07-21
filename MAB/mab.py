@@ -33,6 +33,8 @@ class Index:
         self.context_vector_columns = None
         self.payload_only = payload_only
         self.average_observed_reward = 0 
+        self.selected_indices_last_round = []
+        self.table_scan_times = defaultdict(list)
 
     def __str__(self):
         return f"Index({self.table_name}, {self.index_id}, {self.index_columns}, {self.include_columns}, {self.size}, {self.value})"
@@ -51,6 +53,7 @@ class MAB:
         close_connection(connection)
 
         self.context_size = self.num_columns + 2  # columns + derived
+
         self.columns_to_idx = {}
         i = 0
         for table_name, columns in self.all_columns.items():
@@ -66,12 +69,169 @@ class MAB:
         self.context_vectors = None
         self.upper_bounds  = None
         self.index_selection_count = defaultdict(int)
+        self.query_store = {}
         
+
+    # perform one round of the MAB algorithm
+    def step_round(self, new_miniworkload, current_time_step, query_memory=1, verbose=False):
+
+        # open a connection to the database
+        connection = start_connection()
+
+        # identify newly observed query templates and update statistics for previously observed templates
+        queries_current_round = []
+        for query in new_miniworkload:
+            query_template_id = query.template_id   
+            if query_template_id in self.query_store:
+                # update statistics for previously seen query template
+                self.query_store[query_template_id].frequency += 1
+                self.query_store[query_template_id].last_seen = current_time_step
+                self.query_store[query_template_id].query_string = query.query_string # keep most recenet query string for this template
+                if self.query_store[query_template_id].first_seen == -1:
+                    self.query_store[query_template_id].first_seen = current_time_step
+            else:
+                # create a new query template object for newly observed query template
+                q = Query(connection, query.template_id, query.query_string,  query.payload, query.predicates, query.order_by, time_created=current_time_step)      
+                # generate context vector for the query
+                q.context_vector = self.generate_context_vector_query(q)
+                # add the query template to the query store
+                self.query_store[query_template_id] = q  
+            queries_current_round.append(self.query_store[query_template_id])
+
+
+        # identify query templates of interest (QoI) for this round, these will be the query templates that have been seen recently
+        # (i.e. within the last query_memory rounds in the past)  
+        QoI_list = []
+        for query_template_id, query_obj in self.query_store.items():
+            # if the query is seen recently, i.e. within the last query_memory rounds, then add it to the QoI list
+            if current_time_step - query_obj.last_seen <= query_memory:
+                QoI_list.append(query_obj)
+
+            # otherwise mark it as not of interest, with last_seen set to -1    
+            elif current_time_step - query_obj.last_seen > query_memory:
+                query_obj.last_seen = -1
+
+        if len(QoI_list) > 0:
+            # generate candidate indices using predicate and payload information from QoI
+            candidate_index_arms = self.generate_candidate_indices(connection, QoI_list)
+
+            # generate context vectors
+            context_vectors = self.generate_contexts(self, connection, index_arms, selected_indices_past=QoI_list)
+            
+            # select best configuration
+            selected_indices = self.select_best_configuration(context_vectors, candidate_index_arms)
+
+            # materialze configuration then execute current round queries and get observed rewards
+            total_execution_cost, creation_cost, index_rewards = self.materialize_execute(connection, selected_indices, queries_current_round, candidate_index_arms, verbose=verbose)
+
+            # update parameters
+            self.update_parameters(selected_indices, index_rewards, candidate_index_arms)
+
+            self.selected_indices_last_round = selected_indices
+
+        # close the connection
+        close_connection(connection)
+
+
+    # materialize a new configuration, executes new batch of queries and returns the observed rewards
+    def materialize_execute(self, connection, selected_indices, queries_current_round, candidate_index_arms, table_scan_time_length=1000, verbose=False):
+        # find which new indices to add and which ones to remove
+        existing_indices = set([index.index_id for index in self.selected_indices_last_round])
+        new_indices = set([index.index_id for index in selected_indices])
+        indices_to_remove = existing_indices - new_indices
+        indexes_to_remove = [selected_indices[index_id] for index_id in list(indices_to_remove)]
+        indexes_to_add = new_indices - existing_indices
+        indexes_to_add = [selected_indices[index_id] for index_id in list(indexes_to_add)]
+        
+        # materialize the configuration
+        creation_cost = bulk_create_drop_nonclustered_indexes(connection, indexes_to_add, indexes_to_remove, verbose=verbose)
+        
+        if verbose:
+            print(f"Indexes to add: {indexes_to_add}")
+            print(f"Indexes to remove: {indexes_to_remove}")
+            print(f"Executing queries and observing rewards...")
+
+        # execute the queries
+        total_execution_cost = 0
+        index_rewards = {}
+        for query in queries_current_round:
+            execution_cost, non_clustered_index_usage, clustered_index_usage = execute_query(query.query_string, connection, verbose=verbose)
+            total_execution_cost += execution_cost
+            # aggregate index usage data
+            non_clustered_index_usage = self.merge_index_use(non_clustered_index_usage)
+            clustered_index_usage = self.merge_index_use(clustered_index_usage)
+            
+            current_clustered_index_scans = {}
+            if clustered_index_usage:
+                # get clustered index scan times for each table
+                for index_scan in clustered_index_usage:
+                    table_name = index_scan[0]
+                    current_clustered_index_scans[table_name] = index_scan[1]
+                    if len(query.table_scan_times) < table_scan_time_length:
+                        # record the scan time for this table if the table scan time history is not full
+                        query.table_scan_times[table_name].append(index_scan[1])
+                        self.table_scan_times[table_name].append(index_scan[1])
+
+            if non_clustered_index_usage:
+                # get the access counts for each table
+                table_access_counts = defaultdict(int)
+                for index_use in non_clustered_index_usage:
+                    index_name = index_use[0]
+                    table_name = candidate_index_arms[index_name].table_name
+                    table_access_counts[table_name] += 1
+
+                # get the index scan times for each table
+                for index_use in non_clustered_index_usage:
+                    index_name = index_use[0]
+                    table_name = candidate_index_arms[index_name].table_name
+                    if len(query.index_scan_times) < table_scan_time_length:
+                        # record the index scan time for this table if the table scan time history is not full
+                        query.index_scan_times[table_name].append(index_scan[1])
+                    table_scan_time = query.table_scan_times[table_name]
+                    if len(table_scan_time) > 0:
+                        # compute the reward for this index as the difference between (max) full-table-scan time and index scan time
+                        # averaged over the number of times the index was accessed
+                        temp_reward = max(table_scan_time) - index_use[1]
+                        temp_reward /= table_access_counts[table_name]
+                    elif len(self.table_scan_times[table_name]) > 0:
+                        temp_reward = max(self.table_scan_times[table_name]) - index_use[1]
+                        temp_reward /= table_access_counts[table_name]
+                    else:
+                        raise ValueError("Index scan time could not be determined for a query.")    
+
+                    # the reward is a tuple containing a component for index-scan time during query execution and another for index creation
+                    if table_name not in index_rewards:
+                        index_rewards[index_name] = [temp_reward, 0]
+                    else:
+                        index_rewards[index_name][0] += temp_reward    
+
+        # add in the index creation cost to the reward
+        for index in indexes_to_add:
+            if index.index_id not in index_rewards:
+                index_rewards[index.index_id] = [0, -creation_cost[index.index_id]]
+            else:
+                index_rewards[index.index_id][1] = -creation_cost[index.index_id]
+
+        if verbose:
+            print(f"Total execution cost: {total_execution_cost}")
+ 
+        return total_execution_cost, creation_cost, index_rewards
+
+
+
+    # incrementally aggregate index usage data from multiple query executions      
+    def merge_index_use(self, index_uses):
+        d = defaultdict(list)
+        for index_use in index_uses:
+            if index_use[0] not in d:
+                d[index_use[0]] = [0] * (len(index_use) - 1)
+            d[index_use[0]] = [sum(x) for x in zip(d[index_use[0]], index_use[1:])]
+        return [tuple([x]+y) for x, y in d.items()]
+
 
     """ 
         Candidate index generation
     """
-
     
     # Given a query, generate candidate indices based on the predicates and payload columns in the query.
     def generate_candidate_indices_from_predicates(self, connection, query, MAX_COLUMNS=6, SMALL_TABLE_IGNORE=10000, TABLE_MIN_SELECTIVITY=0.2, verbose=False):
@@ -193,10 +353,10 @@ class MAB:
 
 
     # Given a miniworkload, which is a list of query objects, generate candidate indices
-    def generate_candidate_indices(self, connection, miniworkload, verbose=False):
-        print(f"Gnereting candidate indices for {len(miniworkload)} queries...")
+    def generate_candidate_indices(self, connection, queries, verbose=False):
+        print(f"Gnereting candidate indices for {len(queries)} queries...")
         index_arms = {} 
-        for query in tqdm(miniworkload, desc="Processing queries"):
+        for query in tqdm(queries, desc="Processing queries"):
             query_candidate_indices = self.generate_candidate_indices_from_predicates(connection, query, verbose=verbose)
             for index_id, index in query_candidate_indices.items():
                 if index_id not in index_arms:
@@ -216,6 +376,24 @@ class MAB:
     """
         Context vector generation
     """
+
+    # generate query context vector
+    def generate_context_vector_query(self, query_object):
+        # check if cached context vector is available
+        if query_object.context_vector:
+            return query_object.context_vector
+        
+        # for each column in the query predicates, set the corresponding index in the context vector to 1 
+        context_vector = np.zeros(shape=(self.context_size,1), dtype=float)
+        for table_name, columns in query_object.predicates.items():
+            for column in columns:
+                context_vector[self.columns_to_idx[column]] = 1
+
+        # cache the context vector
+        query_object.context_vector = context_vector
+
+        return context_vector
+
 
     # generate columns piece
     def generate_context_vector_columns_index(self, index, columns_to_idx):
@@ -241,7 +419,7 @@ class MAB:
 
 
     # generate derived piece
-    def generate_context_vector_derived(self, connection, index_arms, selected_indices_last_round):
+    def generate_context_vector_derived(self, connection, index_arms, selected_indices_past):
         database_size = get_database_size(connection)
         derived_context_vectors = np.zeros((len(index_arms), 2), dtype=float)
         
@@ -251,31 +429,30 @@ class MAB:
             
             # the second derived context component will be used to estimate index creation cost as a linear function of index usage
             # i.e. estimated index creation cost is the index size multiplied by a corresponding weight/parameter
-            if index.index_id not in selected_indices_last_round:
+            if index.index_id not in selected_indices_past:
                 # if the index was not selected in the last round then it will be created, otherwise assigned a value of 0    
                 derived_context_vectors[i,1] =  index.size/database_size
         
         return derived_context_vectors
 
 
-    # generate context vectors (selected_indices_last_round should be a list of index ids)
-    def generate_contexts(self, connection, index_arms, selected_indices_last_round=[]):
+    # generate context vectors (selected_indices_past should be a list of index ids)
+    def generate_contexts(self, connection, index_arms, selected_indices_past=[]):
         columns_context_vectors = self.generate_context_vector_columns(index_arms, self.columns_to_idx)
-        derived_context_vectors = self.generate_context_vector_derived(connection, index_arms, selected_indices_last_round)
+        derived_context_vectors = self.generate_context_vector_derived(connection, index_arms, selected_indices_past)
 
         # concatenate the derived and column context vectors
         return np.hstack((derived_context_vectors, columns_context_vectors))
     
 
     """ 
-        Selection of best configuration/super-arm
-            Here, we use LinUCB algorithm to select the best configuration: 
-                * first estimate the upper bound for the estimated expected reward for each index
-                * then (approximately) solve 0-1 knapsack problem to select a subset of indices which
-                  maximizes estimated total expected reward while satisfying constraint on config memory budget 
+        Selection of best configuration/super-arm. Here, we use LinUCB algorithm to select the best configuration: 
+            * first estimate the upper bound for the estimated expected reward for each index
+            * then (approximately) solve 0-1 knapsack problem to select a subset of indices which
+                maximizes estimated total expected reward while satisfying constraint on config memory budget 
 
     """
-    def select_best_configuration(self, context_vectors, index_arms, max_config_size_MB=1024, creation_cost_reduction_factor=3, verbose=False):
+    def select_best_configuration(self, context_vectors, index_arms, config_memory_budget_MB=1024, creation_cost_reduction_factor=3, verbose=False):
         self.context_vectors = context_vectors
         V_inv = np.linalg.inv(self.V)
         
@@ -295,17 +472,18 @@ class MAB:
             #print(f"Expected reward upper bounds: {self.upper_bounds}")
 
         # solve knapsack problem to select the best configuration
-        selected_indices = self.knapsack_solver(index_arms, max_config_size_MB, verbose)
+        selected_indices = self.knapsack_solver(index_arms, config_memory_budget_MB, verbose)
+        selected_indices = {index.index_id: index for index in selected_indices}
 
         # update the index selection count
-        for index in selected_indices:
-            self.index_selection_count[index.index_id] += 1
+        for index_id in selected_indices:
+            self.index_selection_count[index_id] += 1
 
         return selected_indices
 
 
     # greedy 1/2 approximation algorithm for 0-1 knapsack problem     
-    def knapsack_solver(self, index_arms, max_config_size_MB, verbose=False):
+    def knapsack_solver(self, index_arms, config_memory_budget_MB, verbose=False):
         # compute the ratio of the upper bound to the size of the index
         ratios = self.upper_bounds / np.array([index.size for index in index_arms.values()])
         if verbose:
@@ -320,7 +498,7 @@ class MAB:
         current_memory_usage = 0
         for index in sorted_index_arms:
             index_size = index.size
-            if current_memory_usage + index_size <= max_config_size_MB:
+            if current_memory_usage + index_size <= config_memory_budget_MB:
                 selected_indices.append(index)
                 current_memory_usage += index_size
             else:
@@ -339,6 +517,7 @@ class MAB:
             if index.index_id in observed_rewards:
                 index_reward = observed_rewards[index.index_id]
             else:
+                # no reward observed for this index
                 index_reward = (0, 0)
 
             # update the moving average observed reward for this index over all rounds
