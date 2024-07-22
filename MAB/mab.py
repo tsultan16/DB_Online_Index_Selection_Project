@@ -208,9 +208,9 @@ class MAB:
                     if len(query.index_scan_times[table_name]) < table_scan_time_length:
                         # record the index scan time for this table if the table scan time history is not full
                         if table_name not in query.index_scan_times:
-                            query.index_scan_times[table_name] = [index_scan[1]]
+                            query.index_scan_times[table_name] = [index_use[1]]
                         else:
-                            query.index_scan_times[table_name].append(index_scan[1])
+                            query.index_scan_times[table_name].append(index_use[1])
                     if table_name not in query.table_scan_times:
                         query.table_scan_times[table_name] = []
                     table_scan_time = query.table_scan_times[table_name]
@@ -242,6 +242,9 @@ class MAB:
             else:
                 index_rewards[index_id][1] -= creation_cost[index_id]
 
+        print(f"Non clustered index usage: {non_clustered_index_usage}")    
+        print(f"Num indexes added:{len(indexes_to_add)}, Num indexes removed: {indexes_to_remove} Index creation costs: {creation_cost}")
+        print(f"Observed Rewards for indexes: {index_rewards}\n")
         print(f"Total execution cost: {total_execution_cost}, Total index creation cost: {sum(creation_cost.values())}\n")
  
         return total_execution_cost, creation_cost, index_rewards
@@ -299,7 +302,7 @@ class MAB:
             # generate all possible permutations of predicate columns, from single column up to MAX_COLUMNS-column indices
             table_predicates = list(table_predicates.keys())  #[0:6]
             col_permutations = []
-            for num_columns in range(1, min(MAX_COLUMNS, len(table_predicates)+1)):
+            for num_columns in range(1, min(MAX_COLUMNS+1, len(table_predicates)+1)):
                 col_permutations = col_permutations + list(itertools.permutations(table_predicates, num_columns)) 
             
             if verbose: print(f"Column permutations: \n{col_permutations}")
@@ -337,7 +340,6 @@ class MAB:
                 index_size = get_estimated_index_size(connection, table_name, table_payload)
                 print(f"index_id: {index_id}, index columns: {table_payload}, index size: {index_size:.2f} Mb")
                 # assign value... (will assign less value to these indices as they are less useful compared to predicate indices)
-                
                 indices[index_id] = Index(table_name, index_id, table_payload, index_size, payload_only=True)
 
         # indexes with include columns
@@ -357,12 +359,10 @@ class MAB:
 
             if len(include_columns)>0:    
                 if verbose: print(f"Include columns: {include_columns}")
-
                 # generate all possible permutations of predicate columns
-                table_predicates = list(table_predicates.keys())#[0:6]
-                #col_permutations = list(itertools.permutations(table_predicates, len(table_predicates))) 
-                col_permutations = list(itertools.permutations(table_predicates, MAX_COLUMNS)) 
-                
+                table_predicates = list(table_predicates.keys())  
+                col_permutations = list(itertools.permutations(table_predicates, len(table_predicates))) 
+                #col_permutations = list(itertools.permutations(table_predicates, MAX_COLUMNS+1)) 
                 if verbose: print(f"Column permutations: \n{col_permutations}")
 
                 # assign an id and value to each index/column permutation
@@ -372,10 +372,9 @@ class MAB:
                         index_size = get_estimated_index_size(connection, table_name, list(cp) + include_columns)
                         if verbose: print(f"index_id: {index_id}, index columns: {cp}, include columns: {include_columns}, index size: {index_size:.2f} Mb")
                         # assign value...
-                        
                         # create index object
                         indices[index_id] = Index(table_name, index_id, cp, index_size, tuple(include_columns))
-                
+
         return indices        
 
 
@@ -398,8 +397,7 @@ class MAB:
                     index_arms[index_id].clustered_index_time += max(query.table_scan_times[index.table_name])  
                 index_arms[index_id].query_template_ids.add(query.template_id)
 
-        if verbose:
-            print(f"Generated {len(index_arms)} candidate indices")
+        print(f"Generated {len(index_arms)} candidate indices")
           
         return index_arms
 
