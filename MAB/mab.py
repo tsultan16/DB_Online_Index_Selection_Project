@@ -225,18 +225,22 @@ class MAB:
                     else:
                         raise ValueError("Index scan time could not be determined for a query.")    
 
+                    # add clustered index scan time as negative reward
+                    if table_name in current_clustered_index_scans:
+                        temp_reward -= current_clustered_index_scans[table_name]/index_access_counts[table_name]
+
                     # the reward is a tuple containing a component for index-scan time during query execution and another for index creation
-                    if table_name not in index_rewards:
+                    if index_name not in index_rewards:
                         index_rewards[index_name] = [temp_reward, 0]
                     else:
                         index_rewards[index_name][0] += temp_reward    
 
         # add in the index creation cost to the reward
-        for index in indexes_to_add:
-            if index.index_id not in index_rewards:
-                index_rewards[index.index_id] = [0, -creation_cost[index.index_id]]
+        for index_id in creation_cost:
+            if index_id not in index_rewards:
+                index_rewards[index_id] = [0, -creation_cost[index_id]]
             else:
-                index_rewards[index.index_id][1] = -creation_cost[index.index_id]
+                index_rewards[index_id][1] -= creation_cost[index_id]
 
         print(f"Total execution cost: {total_execution_cost}, Total index creation cost: {sum(creation_cost.values())}\n")
  
@@ -508,6 +512,14 @@ class MAB:
             #print(f"confidence bounds shape {confidence_bounds.shape}")
             #print(f"Expected reward upper bounds: {self.upper_bounds}")
         
+        # filter out indices with negative expected reward or that exceed the memory budget
+        filtered_upper_bounds = {}
+        for i, index_id in enumerate(index_arms.keys()):
+            if self.upper_bounds[i] > 0 and index_arms[index_id].size <= config_memory_budget_MB:
+                filtered_upper_bounds[index_id] = self.upper_bounds[i]
+
+        self.upper_bounds = filtered_upper_bounds        
+
         # solve knapsack problem to select the best configuration
         selected_indices = self.knapsack_solver(index_arms, config_memory_budget_MB, verbose)
         selected_indices = {index.index_id: index for index in selected_indices}
@@ -524,20 +536,16 @@ class MAB:
     # greedy 1/2 approximation algorithm for 0-1 knapsack problem     
     def knapsack_solver(self, index_arms, config_memory_budget_MB, verbose=False):
         # compute the ratio of the upper bound to the size of the index
-        ratios = self.upper_bounds / np.array([index.size for index in index_arms.values()])
-
+        ratios = {index_id: upper_bound/index_arms[index_id].size for index_id, upper_bound in self.upper_bounds.items()}
         # sort the indices in descending order of ratio
-        sorted_indices = np.argsort(ratios)[::-1] 
-        # Extract the sorted index_arms values based on sorted_indices
-        sorted_index_arms = [list(index_arms.values())[i] for i in sorted_indices]
+        sorted_indices = sorted(ratios, key=ratios.get, reverse=True)
         # select the indices that fit within the memory budget
         selected_indices = []
-        current_memory_usage = 0
-        for index in sorted_index_arms:
-            index_size = index.size
-            if current_memory_usage + index_size <= config_memory_budget_MB:
-                selected_indices.append(index)
-                current_memory_usage += index_size
+        total_size = 0
+        for index_id in sorted_indices:
+            if total_size + index_arms[index_id].size <= config_memory_budget_MB:
+                selected_indices.append(index_arms[index_id])
+                total_size += index_arms[index_id].size
             else:
                 break    
 
