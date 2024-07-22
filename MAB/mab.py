@@ -51,7 +51,7 @@ class MAB:
         remove_all_nonclustered_indexes(connection)
         close_connection(connection)
 
-        self.context_size = self.num_columns + 2  # columns + derived
+        self.context_size = self.num_columns + self.num_columns + 2  # index_columns + include_columns + derived_context
 
         self.columns_to_idx = {}
         i = 0
@@ -63,7 +63,7 @@ class MAB:
         self.idx_to_columns = {v: k for k, v in self.columns_to_idx.items()}   
 
         # initialize matrix V and vector b
-        self.V = np.eye(self.context_size) * self.vlambda
+        self.V = np.identity(self.context_size) * self.vlambda
         self.b = np.zeros(shape=(self.context_size, 1))
         self.context_vectors = None
         self.upper_bounds  = None
@@ -75,6 +75,7 @@ class MAB:
 
     # perform one round of the MAB algorithm
     def step_round(self, new_miniworkload, current_time_step, query_memory=1, config_memory_budget_MB=128, verbose=False):
+        print(f"Running MAB agent for round {current_time_step}...")    
 
         # open a connection to the database
         connection = start_connection()
@@ -122,22 +123,22 @@ class MAB:
         if len(QoI_list) > 0:
             # generate candidate indices using predicate and payload information from QoI
             if verbose: print(f"Generating candidate indices...")
-            candidate_index_arms = self.generate_candidate_indices(connection, QoI_list, verbose=verbose)
+            self.candidate_index_arms = self.generate_candidate_indices(connection, QoI_list, verbose=verbose)
             # generate context vectors
             if verbose: print(f"Generating context vectors...")    
-            context_vectors = self.generate_contexts(connection, candidate_index_arms, selected_indices_past=QoI_list)
+            context_vectors = self.generate_contexts(connection, self.candidate_index_arms, selected_indices_past=QoI_list)
             
             # select best configuration
             if verbose: print(f"Selecting best configuration...")
-            selected_indices = self.select_best_configuration(context_vectors, candidate_index_arms, config_memory_budget_MB, verbose=verbose)
+            selected_indices = self.select_best_configuration(context_vectors, self.candidate_index_arms, config_memory_budget_MB, verbose=verbose)
 
             # materialze configuration then execute current round queries and get observed rewards
             if verbose: print(f"Materializing configuration and executing queries...")
-            total_execution_cost, creation_cost, index_rewards = self.materialize_execute(connection, selected_indices, queries_current_round, candidate_index_arms, verbose=verbose)
+            total_execution_cost, creation_cost, index_rewards = self.materialize_execute(connection, selected_indices, queries_current_round, self.candidate_index_arms, verbose=verbose)
 
             # update parameters
             if verbose: print(f"Updating MAB parameters...")
-            self.update_parameters(selected_indices, index_rewards, candidate_index_arms)
+            self.update_parameters(selected_indices, index_rewards, self.candidate_index_arms)
             self.selected_indices_last_round = selected_indices
 
         # close the connection
@@ -163,7 +164,7 @@ class MAB:
         total_execution_cost = 0
         index_rewards = {}
         for query in queries_current_round:
-            execution_cost, non_clustered_index_usage, clustered_index_usage = execute_query(query.query_string, connection, verbose=verbose)
+            execution_cost, non_clustered_index_usage, clustered_index_usage = execute_query(query.query_string, connection) #, verbose=verbose)
             total_execution_cost += execution_cost
             # aggregate index usage data
             non_clustered_index_usage = self.merge_index_use(non_clustered_index_usage)
@@ -185,9 +186,9 @@ class MAB:
                         self.table_scan_times[table_name].append(index_scan[1])
 
             if non_clustered_index_usage:
-                if verbose:
-                    print(f"Processing non-clustered index usage for query with template id {query.template_id}")
-                    print(f"Non-clustered index usage: {non_clustered_index_usage}")
+                #if verbose:
+                #    print(f"Processing non-clustered index usage for query with template id {query.template_id}")
+                #    print(f"Non-clustered index usage: {non_clustered_index_usage}")
                 # get the access counts for each table
                 index_access_counts = defaultdict(int)
                 for index_use in non_clustered_index_usage:
@@ -195,14 +196,13 @@ class MAB:
                     table_name = candidate_index_arms[index_name].table_name
                     index_access_counts[table_name] += 1
 
-                if verbose:
-                    print(f"Index access counts: {index_access_counts}")    
-
+                #if verbose:
+                #    print(f"Index access counts: {index_access_counts}")    
                 # get the index scan times for each table
-                if verbose:
-                    print(f"Gathering index scan times...")
+                #if verbose:
+                #    print(f"Gathering index scan times...")
                 for index_use in non_clustered_index_usage:
-                    if verbose: print(f"Processing index usage: {index_use}")
+                    #if verbose: print(f"Processing index usage: {index_use}")
                     index_name = index_use[0]
                     table_name = candidate_index_arms[index_name].table_name
                     if len(query.index_scan_times[table_name]) < table_scan_time_length:
@@ -238,8 +238,7 @@ class MAB:
             else:
                 index_rewards[index.index_id][1] = -creation_cost[index.index_id]
 
-        if verbose:
-            print(f"Total execution cost: {total_execution_cost}")
+        print(f"Total execution cost: {total_execution_cost}, Total index creation cost: {sum(creation_cost.values())}")
  
         return total_execution_cost, creation_cost, index_rewards
 
@@ -430,12 +429,21 @@ class MAB:
         if index.context_vector_columns:
             return index.context_vector_columns
 
-        context_vector = np.zeros(len(columns_to_idx), dtype=float)
-        for j, column in enumerate(index.index_columns):
-            context_vector[columns_to_idx[column]] = 10**(-j)
+        index_column_context_vector = np.zeros(len(columns_to_idx), dtype=float)
+        include_column_context_vector = np.zeros(len(columns_to_idx), dtype=float)
+        
+        # context vector for index columns
+        for j, column_name in enumerate(index.index_columns):
+            column_position_in_index = j+1
+            index_column_context_vector[columns_to_idx[column_name]] = 1/(10**column_position_in_index)
+        # context vector for include columns
+        for j, column_name in enumerate(index.include_columns):
+            include_column_context_vector[columns_to_idx[column_name]] = 1
 
+        # concatenate the two context vectors
+        context_vector = np.hstack((index_column_context_vector, include_column_context_vector))
         # cache the context vector
-        index.encode_context_vector = context_vector    
+        index.context_vector_columns = context_vector    
 
         return context_vector    
 
@@ -483,23 +491,23 @@ class MAB:
     """
     def select_best_configuration(self, context_vectors, index_arms, config_memory_budget_MB, creation_cost_reduction_factor=3, verbose=False):
         self.context_vectors = context_vectors
-        V_inv = np.linalg.inv(self.V)
-        
         # compute parameters vector
+        V_inv = np.linalg.inv(self.V)        
         theta = V_inv @ self.b 
+        
         # rescale the parameter corresponding to the size of the index
         theta[1] = theta[1]/creation_cost_reduction_factor  
         # estimate the expected reward upper bound for each arm/index
         expected_reward = (context_vectors @ theta).reshape(-1)
         # estimate upper confidence bound
         confidence_bounds = self.alpha * np.sqrt(np.diag(context_vectors @ V_inv @ context_vectors.T))
-        # confidence_bounds = self.alpha * np.sqrt(np.einsum('ij,jk,ik->i', context_vectors, V_inv, context_vectors))
         self.upper_bounds = expected_reward + confidence_bounds   
+        # confidence_bounds = self.alpha * np.sqrt(np.einsum('ij,jk,ik->i', context_vectors, V_inv, context_vectors))
         #if verbose:
             #print(f"expected rewards shape {expected_reward.shape}")
             #print(f"confidence bounds shape {confidence_bounds.shape}")
             #print(f"Expected reward upper bounds: {self.upper_bounds}")
-
+        
         # solve knapsack problem to select the best configuration
         selected_indices = self.knapsack_solver(index_arms, config_memory_budget_MB, verbose)
         selected_indices = {index.index_id: index for index in selected_indices}
@@ -508,8 +516,7 @@ class MAB:
         for index_id in selected_indices:
             self.index_selection_count[index_id] += 1
 
-        if verbose:
-            print(f"Best configuration contains {len(selected_indices)} indices: \n{list(selected_indices.keys())}")    
+        print(f"Best configuration contains {len(selected_indices)} indices: \n{list(selected_indices.keys())}")    
 
         return selected_indices
 
@@ -548,7 +555,7 @@ class MAB:
                 index_reward = observed_rewards[index_id]
             else:
                 # no reward observed for this index
-                index_reward = (0, 0)
+                index_reward = [0, 0]
 
             # update the moving average observed reward for this index over all rounds
             candidate_index_arms[index_id].average_observed_reward = (index_reward[0] + candidate_index_arms[index_id].average_observed_reward)/2
@@ -566,10 +573,11 @@ class MAB:
             # this is done separately to avoid the index creation cost/reward component from dominating the update
             self.V += np.outer(temp_context, temp_context)
             self.b += index_reward[1] * temp_context.reshape(-1,1)             
-            
+
         # reset the context vectors and upper bounds
         self.context_vectors = None
         self.upper_bounds  = None
+
 
 
 
