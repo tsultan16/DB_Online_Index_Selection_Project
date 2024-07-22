@@ -126,7 +126,7 @@ class MAB:
             self.candidate_index_arms = self.generate_candidate_indices(connection, QoI_list, verbose=verbose)
             # generate context vectors
             if verbose: print(f"Generating context vectors...")    
-            context_vectors = self.generate_contexts(connection, self.candidate_index_arms, selected_indices_past=QoI_list)
+            context_vectors = self.generate_contexts(connection, self.candidate_index_arms, selected_indices_past=self.selected_indices_last_round)
             
             # select best configuration
             if verbose: print(f"Selecting best configuration...")
@@ -238,7 +238,7 @@ class MAB:
             else:
                 index_rewards[index.index_id][1] = -creation_cost[index.index_id]
 
-        print(f"Total execution cost: {total_execution_cost}, Total index creation cost: {sum(creation_cost.values())}")
+        print(f"Total execution cost: {total_execution_cost}, Total index creation cost: {sum(creation_cost.values())}\n")
  
         return total_execution_cost, creation_cost, index_rewards
 
@@ -434,7 +434,7 @@ class MAB:
         
         # context vector for index columns
         for j, column_name in enumerate(index.index_columns):
-            column_position_in_index = j+1
+            column_position_in_index = j
             index_column_context_vector[columns_to_idx[column_name]] = 1/(10**column_position_in_index)
         # context vector for include columns
         for j, column_name in enumerate(index.include_columns):
