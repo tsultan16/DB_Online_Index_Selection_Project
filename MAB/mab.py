@@ -41,10 +41,11 @@ class Index:
 
 
 class MAB:
-    def __init__(self, alpha=1.0, vlambda=0.5):
+    def __init__(self, alpha=1.0, vlambda=0.5, alpha_decay_rate=1.0):
         # define Lin UCB parameters
         self.alpha = alpha     # UCB exploration parameter
         self.vlambda = vlambda # regularization parameter
+        self.alpha_decay_rate = alpha_decay_rate  # decay rate for alpha
 
         # get all columns and drop all non clustered indices
         connection = start_connection()
@@ -182,7 +183,7 @@ class MAB:
             indexes_to_add = []
             indexes_to_remove = []
             creation_cost = {}
-            
+
         # execute the queries
         total_execution_cost = 0
         index_rewards = {}
@@ -638,7 +639,7 @@ class MAB:
                 maximizes estimated total expected reward while satisfying constraint on config memory budget 
 
     """
-    def select_best_configuration(self, context_vectors, index_arms, config_memory_budget_MB, creation_cost_reduction_factor=3, verbose=False):
+    def select_best_configuration(self, context_vectors, index_arms, config_memory_budget_MB, creation_cost_reduction_factor=10, verbose=False):
         self.context_vectors = context_vectors
         # compute parameters vector
         V_inv = np.linalg.inv(self.V)        
@@ -659,11 +660,12 @@ class MAB:
         
         #################################
         # find most negative upper bound
-        min_upper_bound = min(self.upper_bounds)
+        #min_upper_bound = min(self.upper_bounds)
         # make all upper bounds non-negative
-        if min_upper_bound < 0:
-            self.upper_bounds = self.upper_bounds - min_upper_bound 
-        #if verbose: print(f"Upper bounds after shifting: {self.upper_bounds}")
+        #if min_upper_bound < 0:
+        #    self.upper_bounds = self.upper_bounds - min_upper_bound 
+        
+        # if verbose: print(f"Upper bounds after shifting: {self.upper_bounds}")
         #################################
 
         # filter out indices with negative expected reward or that exceed the memory budget
@@ -685,6 +687,9 @@ class MAB:
         # update the index selection count
         for index_id in selected_indices:
             self.index_selection_count[index_id] += 1
+
+        # decay alpha
+        self.alpha = self.alpha * self.alpha_decay_rate    
 
         print(f"Best configuration contains {len(selected_indices)} indices: \n{list(selected_indices.keys())}")    
         self.best_configuration = selected_indices
