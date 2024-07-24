@@ -73,6 +73,7 @@ class MAB:
         self.query_store = {}
         self.selected_indices_last_round = {}
         self.table_scan_times = defaultdict(list)
+        self.index_average_reward = defaultdict(float)
 
         # constants
         self.MAX_INDEX_COLUMNS = 6
@@ -80,6 +81,7 @@ class MAB:
         self.SMALL_TABLE_IGNORE=1000
         self.TABLE_MIN_SELECTIVITY=0.5
         self.MAX_INDEXES_PER_TABLE=3
+        self.TABLE_SCAN_TIME_LENGTH=1000
 
 
     # perform one round of the MAB algorithm
@@ -175,8 +177,9 @@ class MAB:
 
         print(f"\nRound completed. Time taken for recommendation: {recommendation_time} seconds.\n")
 
+
     # materialize a new configuration, executes new batch of queries and returns the observed rewards
-    def materialize_execute(self, connection, selected_indices, queries_current_round, candidate_index_arms, table_scan_time_length=1000, verbose=False):
+    def materialize_execute(self, connection, selected_indices, queries_current_round, candidate_index_arms, verbose=False):
        
         if len(selected_indices) > 0:
             # find which new indices to add and which ones to remove
@@ -214,7 +217,7 @@ class MAB:
                         query.table_scan_times[table_name] = []
                     if table_name not in self.table_scan_times:
                         self.table_scan_times[table_name] = []
-                    if len(query.table_scan_times[table_name]) < table_scan_time_length:
+                    if len(query.table_scan_times[table_name]) < self.TABLE_SCAN_TIME_LENGTH:
                         # record the scan time for this table if the table scan time history is not full
                         query.table_scan_times[table_name].append(index_scan[1])
                         self.table_scan_times[table_name].append(index_scan[1])
@@ -236,18 +239,19 @@ class MAB:
                 # get the index scan times for each table
                 #if verbose:
                 #    print(f"Gathering index scan times...")
+
                 for index_use in non_clustered_index_usage:
                     #if verbose: print(f"Processing index usage: {index_use}")
                     index_name = index_use[0]
                     table_name = candidate_index_arms[index_name].table_name
-                    if len(query.index_scan_times[table_name]) < table_scan_time_length:
+                    if table_name not in query.table_scan_times:
+                        query.table_scan_times[table_name] = []
+                    if len(query.table_scan_times[table_name]) < self.TABLE_SCAN_TIME_LENGTH:
                         # record the index scan time for this table if the table scan time history is not full
                         if table_name not in query.index_scan_times:
                             query.index_scan_times[table_name] = [index_use[1]]
                         else:
                             query.index_scan_times[table_name].append(index_use[1])
-                    if table_name not in query.table_scan_times:
-                        query.table_scan_times[table_name] = []
                     table_scan_time = query.table_scan_times[table_name]
                     if len(table_scan_time) > 0:
                         # compute the reward for this index as the difference between (max) full-table-scan time and index scan time
@@ -622,7 +626,7 @@ class MAB:
         
         for i, index in enumerate(index_arms.values()):    
             # the first derived context component will be the average observed reward for this index
-            derived_context_vectors[i,0] =  index.average_observed_reward
+            derived_context_vectors[i,0] = self.index_average_reward[index.index_id]    # index.average_observed_reward
             
             # the second derived context component will be used to estimate index creation cost as a linear function of index usage
             # i.e. estimated index creation cost is the index size multiplied by a corresponding weight/parameter
@@ -669,6 +673,10 @@ class MAB:
             #print(f"confidence bounds shape {confidence_bounds.shape}")
             #print(f"Expected reward upper bounds: {self.upper_bounds}")
         
+        #print(f"Expected Reward: \n{expected_reward.reshape(-1)}")
+        #print(f"Confidence bounds: \n{confidence_bounds.reshape(-1)}")
+
+
         #################################
         # find most negative upper bound
         min_upper_bound = min(self.upper_bounds)
@@ -706,8 +714,7 @@ class MAB:
 
         # solve knapsack problem to select the best configuration
         selected_indices = self.knapsack_solver(index_arms, config_memory_budget_MB, verbose)
-        #selected_indices = self.subset_subtotal_solver(index_arms, config_memory_budget_MB, verbose)
-        
+        #selected_indices = self.subset_subtotal_solver(index_arms, config_memory_budget_MB, verbose)        
         selected_indices = {index.index_id: index for index in selected_indices}
 
         # update the index selection count
@@ -770,7 +777,8 @@ class MAB:
                 index_reward = [0, 0]
 
             # update the moving average observed reward for this index over all rounds
-            candidate_index_arms[index_id].average_observed_reward = (index_reward[0] + candidate_index_arms[index_id].average_observed_reward)/2
+            #candidate_index_arms[index_id].average_observed_reward = (index_reward[0] + candidate_index_arms[index_id].average_observed_reward)/2
+            self.index_average_reward[index_id] = (index_reward[0] + self.index_average_reward[index_id])/2
 
             # separate out the update for the index creation cost/reward component
             temp_context = np.zeros_like(context_vector)
