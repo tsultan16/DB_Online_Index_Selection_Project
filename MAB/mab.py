@@ -153,7 +153,8 @@ class MAB:
 
             # materialze configuration then execute current round queries and get observed rewards
             print(f"Materializing configuration and executing queries...")
-            total_execution_cost, creation_cost, index_rewards = self.materialize_execute(connection, selected_indices, queries_current_round, self.candidate_index_arms, verbose=verbose)
+            #total_execution_cost, creation_cost, index_rewards = self.materialize_execute(connection, selected_indices, queries_current_round, self.candidate_index_arms, verbose=verbose)
+            total_execution_cost, creation_cost, index_rewards = self.materialize_execute_compare(connection, selected_indices, queries_current_round, self.candidate_index_arms, verbose=verbose)
 
             # update parameters
             print(f"Updating MAB parameters...")
@@ -175,7 +176,7 @@ class MAB:
         # close the connection
         close_connection(connection)
 
-        print(f"\nRound completed. Time taken for recommendation: {recommendation_time} seconds.\n")
+        print(f"Round completed. Time taken for recommendation: {recommendation_time} seconds.\n")
 
 
     # materialize a new configuration, executes new batch of queries and returns the observed rewards
@@ -288,6 +289,130 @@ class MAB:
         print(f"Total execution cost: {total_execution_cost}, Total index creation cost: {sum(creation_cost.values())}\n")
  
         return total_execution_cost, creation_cost, index_rewards
+
+
+    # execute queries after materializing the configuration, then execute again with no index
+    def materialize_execute_compare(self, connection, selected_indices, queries_current_round, candidate_index_arms, verbose=False):
+       
+        # bulk drop all non-clustered indexes
+        remove_all_nonclustered_indexes(connection)
+        # execute the queries
+        total_execution_cost_no_index = 0
+        for query in queries_current_round:
+            execution_cost, _, _ = execute_query(query.query_string, connection)
+            total_execution_cost_no_index += execution_cost
+
+
+        if len(selected_indices) > 0:
+            # find which new indices to add and which ones to remove
+            existing_indices = set(self.selected_indices_last_round.keys())
+            new_indices = set(selected_indices.keys())
+            indices_to_remove = existing_indices - new_indices
+            indexes_to_remove = [self.selected_indices_last_round[index_id] for index_id in list(indices_to_remove)]
+            indexes_to_add = new_indices - existing_indices
+            indexes_to_add = [selected_indices[index_id] for index_id in list(indexes_to_add)]
+            
+            # materialize the configuration
+            creation_cost_temp = bulk_create_drop_nonclustered_indexes(connection, list(selected_indices.values()), [], verbose=verbose)
+            creation_cost = {index.index_id: creation_cost_temp[index.index_id] for index in indexes_to_add}           
+
+        else:
+            indexes_to_add = []
+            indexes_to_remove = []
+            creation_cost = {}
+
+        # execute the queries
+        total_execution_cost = 0
+        index_rewards = {}
+        for query in queries_current_round:
+            execution_cost, non_clustered_index_usage, clustered_index_usage = execute_query(query.query_string, connection) #, verbose=verbose)
+            total_execution_cost += execution_cost
+            # aggregate index usage data
+            non_clustered_index_usage = self.merge_index_use(non_clustered_index_usage)
+            clustered_index_usage = self.merge_index_use(clustered_index_usage)
+            
+            current_clustered_index_scans = {}
+            if clustered_index_usage:
+                # get clustered index scan times for each table
+                for index_scan in clustered_index_usage:
+                    table_name = index_scan[0]
+                    current_clustered_index_scans[table_name] = index_scan[1]
+                    if table_name not in query.table_scan_times:
+                        query.table_scan_times[table_name] = []
+                    if table_name not in self.table_scan_times:
+                        self.table_scan_times[table_name] = []
+                    if len(query.table_scan_times[table_name]) < self.TABLE_SCAN_TIME_LENGTH:
+                        # record the scan time for this table if the table scan time history is not full
+                        query.table_scan_times[table_name].append(index_scan[1])
+                        self.table_scan_times[table_name].append(index_scan[1])
+
+            if non_clustered_index_usage:
+                #if verbose:
+                #    print(f"Processing non-clustered index usage for query with template id {query.template_id}")
+                #    print(f"Non-clustered index usage: {non_clustered_index_usage}")
+                
+                # get the access counts for each table
+                index_access_counts = defaultdict(int)
+                for index_use in non_clustered_index_usage:
+                    index_name = index_use[0]
+                    table_name = candidate_index_arms[index_name].table_name
+                    index_access_counts[table_name] += 1
+
+                #if verbose:
+                #    print(f"Index access counts: {index_access_counts}")    
+                # get the index scan times for each table
+                #if verbose:
+                #    print(f"Gathering index scan times...")
+
+                for index_use in non_clustered_index_usage:
+                    #if verbose: print(f"Processing index usage: {index_use}")
+                    index_name = index_use[0]
+                    table_name = candidate_index_arms[index_name].table_name
+                    if table_name not in query.table_scan_times:
+                        query.table_scan_times[table_name] = []
+                    if len(query.table_scan_times[table_name]) < self.TABLE_SCAN_TIME_LENGTH:
+                        # record the index scan time for this table if the table scan time history is not full
+                        if table_name not in query.index_scan_times:
+                            query.index_scan_times[table_name] = [index_use[1]]
+                        else:
+                            query.index_scan_times[table_name].append(index_use[1])
+                    table_scan_time = query.table_scan_times[table_name]
+                    if len(table_scan_time) > 0:
+                        # compute the reward for this index as the difference between (max) full-table-scan time and index scan time
+                        # averaged over the number of times the index was accessed
+                        temp_reward = max(table_scan_time) - index_use[1]
+                        temp_reward /= index_access_counts[table_name]
+                    elif len(self.table_scan_times[table_name]) > 0:
+                        temp_reward = max(self.table_scan_times[table_name]) - index_use[1]
+                        temp_reward /= index_access_counts[table_name]
+                    else:
+                        raise ValueError("Index scan time could not be determined for a query.")    
+
+                    # add clustered index scan time as negative reward
+                    if table_name in current_clustered_index_scans:
+                        temp_reward -= current_clustered_index_scans[table_name]/index_access_counts[table_name]
+
+                    # the reward is a tuple containing a component for index-scan time during query execution and another for index creation
+                    if index_name not in index_rewards:
+                        index_rewards[index_name] = [temp_reward, 0]
+                    else:
+                        index_rewards[index_name][0] += temp_reward    
+
+            #print(f"Non clustered index usage for query# {i+1}: {non_clustered_index_usage}")    
+
+        # add in the index creation cost to the reward
+        for index_id in creation_cost:
+            if index_id not in index_rewards:
+                index_rewards[index_id] = [0, -creation_cost[index_id]]
+            else:
+                index_rewards[index_id][1] -= creation_cost[index_id]
+
+        print(f"Num indexes added:{len(indexes_to_add)}, Num indexes removed: {len(indexes_to_remove)} Index creation costs: {creation_cost}")
+        print(f"Observed Rewards for indexes: {index_rewards}\n")
+        print(f"Total execution cost with no index: {total_execution_cost_no_index}, Total execution cost with indexes: {total_execution_cost}, Total index creation cost: {sum(creation_cost.values())}\n")
+ 
+        return total_execution_cost, creation_cost, index_rewards
+
 
 
     # incrementally aggregate index usage data from multiple query executions      
@@ -797,6 +922,8 @@ class MAB:
         # reset the context vectors and upper bounds
         self.context_vectors = None
         self.upper_bounds  = None
+
+        print(f"Index average rewards: {self.index_average_reward}")
 
 
 
