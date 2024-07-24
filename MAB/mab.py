@@ -74,6 +74,13 @@ class MAB:
         self.selected_indices_last_round = {}
         self.table_scan_times = defaultdict(list)
 
+        # constants
+        self.MAX_INDEX_COLUMNS = 6
+        self.MAX_INCLUDE_COLUMNS=4 
+        self.SMALL_TABLE_IGNORE=1000
+        self.TABLE_MIN_SELECTIVITY=0.5
+        self.MAX_INDEXES_PER_TABLE=3
+
 
     # perform one round of the MAB algorithm
     def step_round(self, new_miniworkload, current_time_step, query_memory=1, config_memory_budget_MB=128, verbose=False):
@@ -84,7 +91,7 @@ class MAB:
 
         start_time = datetime.datetime.now()
         # identify newly observed query templates and update statistics for previously observed templates
-        if verbose: print(f"Identifying new query templates and updating statistics...")
+        print(f"Identifying new query templates and updating statistics...")
         queries_current_round = []
         num_new = 0
         for query in new_miniworkload:
@@ -106,7 +113,7 @@ class MAB:
                 num_new += 1
             queries_current_round.append(self.query_store[query_template_id])
 
-        if verbose: print(f"Number of new query templates added: {num_new}")
+        print(f"Number of new query templates added: {num_new}")
 
         # select query templates of interest (QoI) for this round, these will be the query templates that have been seen recently
         # (i.e. within the last query_memory rounds in the past) but not in the current round 
@@ -121,7 +128,7 @@ class MAB:
             elif current_time_step - query_obj.last_seen > query_memory:
                 query_obj.last_seen = -1
 
-        if verbose: print(f"Number of queries of interest: {len(QoI_list)}")        
+        print(f"Number of queries of interest: {len(QoI_list)}")        
 
         end_time = datetime.datetime.now()
         recommendation_time = end_time - start_time
@@ -129,25 +136,25 @@ class MAB:
         if len(QoI_list) > 0:
             start_time = datetime.datetime.now()
             # generate candidate indices using predicate and payload information from QoI
-            if verbose: print(f"Generating candidate indices...")
+            print(f"Generating candidate indices...")
             self.candidate_index_arms = self.generate_candidate_indices(connection, QoI_list, verbose=verbose)
             # generate context vectors
-            if verbose: print(f"Generating context vectors...")    
+            print(f"Generating context vectors...")    
             context_vectors = self.generate_contexts(connection, self.candidate_index_arms, selected_indices_past=self.selected_indices_last_round)
             
             # select best configuration
-            if verbose: print(f"Selecting best configuration...")
+            print(f"Selecting best configuration...")
             selected_indices = self.select_best_configuration(context_vectors, self.candidate_index_arms, config_memory_budget_MB, verbose=verbose)
 
             end_time = datetime.datetime.now()
             recommendation_time += (end_time - start_time)    
 
             # materialze configuration then execute current round queries and get observed rewards
-            if verbose: print(f"Materializing configuration and executing queries...")
+            print(f"Materializing configuration and executing queries...")
             total_execution_cost, creation_cost, index_rewards = self.materialize_execute(connection, selected_indices, queries_current_round, self.candidate_index_arms, verbose=verbose)
 
             # update parameters
-            if verbose: print(f"Updating MAB parameters...")
+            print(f"Updating MAB parameters...")
             self.update_parameters(selected_indices, index_rewards, self.candidate_index_arms)
             self.selected_indices_last_round = selected_indices
 
@@ -156,8 +163,12 @@ class MAB:
             self.candidate_index_arms = {}                          
 
             # materialze configuration then execute current round queries and get observed rewards
-            if verbose: print(f"Materializing configuration and executing queries...")
+            print(f"Materializing configuration and executing queries...")
             total_execution_cost, creation_cost, index_rewards = self.materialize_execute(connection, selected_indices, queries_current_round, self.candidate_index_arms, verbose=verbose)
+
+        # sort the index select counts from highest to lowest
+        sorted_index_selection_count = {k: v for k, v in sorted(self.index_selection_count.items(), key=lambda item: item[1], reverse=True)}
+        print(f"Index selection counts: {sorted_index_selection_count}")
 
         # close the connection
         close_connection(connection)
@@ -166,8 +177,7 @@ class MAB:
 
     # materialize a new configuration, executes new batch of queries and returns the observed rewards
     def materialize_execute(self, connection, selected_indices, queries_current_round, candidate_index_arms, table_scan_time_length=1000, verbose=False):
-        print(f"Materializing configuration, executing queries and observing rewards...")
-        
+       
         if len(selected_indices) > 0:
             # find which new indices to add and which ones to remove
             existing_indices = set(self.selected_indices_last_round.keys())
@@ -260,7 +270,7 @@ class MAB:
                     else:
                         index_rewards[index_name][0] += temp_reward    
 
-            print(f"Non clustered index usage for query# {i+1}: {non_clustered_index_usage}")    
+            #print(f"Non clustered index usage for query# {i+1}: {non_clustered_index_usage}")    
 
         # add in the index creation cost to the reward
         for index_id in creation_cost:
@@ -291,7 +301,7 @@ class MAB:
     """
     
     # Given a query, generate candidate indices based on the predicates and payload columns in the query.
-    def generate_candidate_indices_from_predicates(self, connection, query, MAX_COLUMNS=6, SMALL_TABLE_IGNORE=1000, TABLE_MIN_SELECTIVITY=0.25, verbose=False):
+    def generate_candidate_indices_from_predicates(self, connection, query, verbose=False):
         # get all tables in the db
         tables = get_all_tables(connection)
         if verbose:
@@ -323,14 +333,14 @@ class MAB:
 
 
             # check if conditions for cheap full table scan are met
-            if table.row_count < SMALL_TABLE_IGNORE or ((query.selectivity[table_name] > TABLE_MIN_SELECTIVITY) and (len(include_columns)>0)):
+            if table.row_count < self.SMALL_TABLE_IGNORE or ((query.selectivity[table_name] > self.TABLE_MIN_SELECTIVITY) and (len(include_columns)>0)):
                 if verbose: print(f"Full table scan for table: {table_name} is cheap, skipping")
                 continue
 
             # generate all possible permutations of predicate columns, from single column up to MAX_COLUMNS-column indices
             table_predicates = list(table_predicates.keys())  #[0:6]
             col_permutations = []
-            for num_columns in range(1, min(MAX_COLUMNS+1, len(table_predicates)+1)):
+            for num_columns in range(1, min(self.MAX_COLUMNS+1, len(table_predicates)+1)):
                 col_permutations = col_permutations + list(itertools.permutations(table_predicates, num_columns)) 
             
             if verbose: print(f"Column permutations: \n{col_permutations}")
@@ -358,7 +368,7 @@ class MAB:
                 continue
 
             # check if conditions for cheap full table scan are met
-            if table.row_count < SMALL_TABLE_IGNORE:
+            if table.row_count < self.SMALL_TABLE_IGNORE:
                 if verbose: print(f"Full table scan for table: {table_name} is cheap, skipping")
                 continue   
 
@@ -376,7 +386,7 @@ class MAB:
             if verbose: print(f"\nTable --> {table_name}, Predicate Columns --> {set(table_predicates)}, table row count --> {table.row_count}")
             
             # check if conditions for cheap full table scan are met
-            if table.row_count < SMALL_TABLE_IGNORE:
+            if table.row_count < self.SMALL_TABLE_IGNORE:
                 if verbose: print(f"Full table scan for table: {table_name} is cheap, skipping")
                 continue  
 
@@ -407,7 +417,7 @@ class MAB:
 
 
     # version 2: takees into account, group by and order by columns
-    def generate_candidate_indices_from_predicates_v2(self, connection, query, MAX_INDEX_COLUMNS=6, MAX_INCLUDE_COLUMNS=4, SMALL_TABLE_IGNORE=1000, TABLE_MIN_SELECTIVITY=0.5, verbose=False):
+    def generate_candidate_indices_from_predicates_v2(self, connection, query, verbose=False):
         # get all tables in the db
         tables = get_all_tables(connection)
         if verbose:
@@ -442,7 +452,7 @@ class MAB:
 
             # check if conditions for cheap full table scan are met
             #if table.row_count < SMALL_TABLE_IGNORE or ((query.selectivity[table_name] > TABLE_MIN_SELECTIVITY) and (len(include_columns)>0)):
-            if table.row_count < SMALL_TABLE_IGNORE:
+            if table.row_count < self.SMALL_TABLE_IGNORE:
                 if verbose: print(f"Full table scan for table: {table_name} is cheap, skipping")
                 continue
 
@@ -460,7 +470,7 @@ class MAB:
             combined_columns = list(set(predicates_columns + group_by_columns + order_by_columns))
 
             col_permutations = []
-            for num_columns in range(1, min(MAX_INDEX_COLUMNS+1, len(combined_columns)+1)):
+            for num_columns in range(1, min(self.MAX_INDEX_COLUMNS+1, len(combined_columns)+1)):
                 col_permutations = col_permutations + list(itertools.permutations(combined_columns, num_columns)) 
             
             if verbose: print(f"Column permutations: \n{col_permutations}")
@@ -485,7 +495,7 @@ class MAB:
                     if verbose: print(f"Include columns: {include_columns_filtered}")
                     # generate all combinations of include columns from 1 to MAX_COLUMNS, ignore ordering
                     include_col_combinations = []
-                    for num_columns in range(1, min(MAX_INCLUDE_COLUMNS+1, len(include_columns_filtered)+1)):
+                    for num_columns in range(1, min(self.MAX_INCLUDE_COLUMNS+1, len(include_columns_filtered)+1)):
                         include_col_combinations = include_col_combinations + list(itertools.combinations(include_columns_filtered, num_columns))
                     
                     if verbose: print(f"Include column combinations: \n{include_col_combinations}")
@@ -512,7 +522,7 @@ class MAB:
                 continue
 
             # check if conditions for cheap full table scan are met
-            if table.row_count < SMALL_TABLE_IGNORE:
+            if table.row_count < self.SMALL_TABLE_IGNORE:
                 if verbose: print(f"Full table scan for table: {table_name} is cheap, skipping")
                 continue   
 
@@ -644,6 +654,8 @@ class MAB:
         # compute parameters vector
         V_inv = np.linalg.inv(self.V)        
         theta = V_inv @ self.b 
+
+        print(f"Theta - parameter vector: \n{theta.reshape(-1)}")
         
         # rescale the parameter corresponding to the size of the index
         theta[1] = theta[1]/creation_cost_reduction_factor  
@@ -652,7 +664,6 @@ class MAB:
         # estimate upper confidence bound
         confidence_bounds = self.alpha * np.sqrt(np.diag(context_vectors @ V_inv @ context_vectors.T))
         self.upper_bounds = expected_reward + confidence_bounds   
-        # confidence_bounds = self.alpha * np.sqrt(np.einsum('ij,jk,ik->i', context_vectors, V_inv, context_vectors))
         #if verbose:
             #print(f"expected rewards shape {expected_reward.shape}")
             #print(f"confidence bounds shape {confidence_bounds.shape}")
@@ -660,27 +671,42 @@ class MAB:
         
         #################################
         # find most negative upper bound
-        #min_upper_bound = min(self.upper_bounds)
+        min_upper_bound = min(self.upper_bounds)
         # make all upper bounds non-negative
-        #if min_upper_bound < 0:
-        #    self.upper_bounds = self.upper_bounds - min_upper_bound 
+        if min_upper_bound < 0:
+            self.upper_bounds = self.upper_bounds - min_upper_bound 
         
         # if verbose: print(f"Upper bounds after shifting: {self.upper_bounds}")
         #################################
 
-        # filter out indices with negative expected reward or that exceed the memory budget
+        # filter out indices that exceed the memory budget
         filtered_upper_bounds = {}
         for i, index_id in enumerate(index_arms.keys()):
-            if self.upper_bounds[i] >= 0 and index_arms[index_id].size <= config_memory_budget_MB:
+            if index_arms[index_id].size <= config_memory_budget_MB:
                 filtered_upper_bounds[index_id] = self.upper_bounds[i]
 
         if verbose: print(f"Filtered upper bounds: {filtered_upper_bounds}")
 
         self.upper_bounds = filtered_upper_bounds        
 
+        # keep only top MAX_INDEXES_PER_TABLE indices for each table in the filtered upper bounds
+        table_indexes = defaultdict(list)
+        for index_id in self.upper_bounds:
+            table_indexes[index_arms[index_id].table_name].append(index_id)
+
+        # sort the indices for each table in descending order of upper bound and keep only the top MAX_INDEXES_PER_TABLE indices for each table
+        table_filtered_upper_bounds = {}
+        for table_name, indexes in table_indexes.items():
+            table_indexes[table_name] = sorted(indexes, key=self.upper_bounds.get, reverse=True)[:self.MAX_INDEXES_PER_TABLE]
+            table_filtered_upper_bounds.update({index_id: self.upper_bounds[index_id] for index_id in table_indexes[table_name]})
+
+        self.upper_bounds = table_filtered_upper_bounds    
+        print(f"Table filtered indexes: {table_indexes}")
+        print(f"Number of candidate indexes after filtration: {len(self.upper_bounds)}")
+
         # solve knapsack problem to select the best configuration
-        #selected_indices = self.knapsack_solver(index_arms, config_memory_budget_MB, verbose)
-        selected_indices = self.subset_sum_solver(index_arms, config_memory_budget_MB, verbose)
+        selected_indices = self.knapsack_solver(index_arms, config_memory_budget_MB, verbose)
+        #selected_indices = self.subset_subtotal_solver(index_arms, config_memory_budget_MB, verbose)
         
         selected_indices = {index.index_id: index for index in selected_indices}
 
@@ -716,7 +742,7 @@ class MAB:
         return selected_indices        
 
     # sorts the indices based on the upper bound and selects the top-k indices that fit within the memory budget
-    def subset_sum_solver(self, index_arms, config_memory_budget_MB, verbose=False):
+    def subset_subtotal_solver(self, index_arms, config_memory_budget_MB, verbose=False):
         sorted_indices = sorted(self.upper_bounds, key=self.upper_bounds.get, reverse=True)
         selected_indices = []
         total_size = 0
