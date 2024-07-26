@@ -29,21 +29,21 @@ MAX_TABLE_SCAN_TIME_SAMPLES = 1000
 
 
 class Query:
-    def __init__(self, connection, template_id, query_string, payload, predicates, order_by, time_stamp=0, benchmark="TPC-H"):
+    def __init__(self, connection, template_id, query_string, payload, predicates, order_by, group_by, time_created=0, benchmark="TPC-H"):
         self.template_id = template_id
         self.query_string = query_string
         self.payload = payload
         self.predicates = predicates
         self.order_by = order_by
+        self.group_by = group_by
         self.benchmark = benchmark
-        self.group_by = {}
         self.selectivity = estimate_selectivity(connection, query_string, predicates)
         self.frequency = 1
-        self.first_seen = time_stamp
-        self.last_seen = time_stamp
+        self.first_seen = time_created
+        self.last_seen = time_created
         self.table_scan_times = get_query_table_scan_times(connection, query_string, predicates)
         self.index_scan_times = copy.deepcopy(self.table_scan_times)
-        self.context = None
+        self.context_vector = None
 
     def get_id(self):
         return self.template_id
@@ -52,7 +52,7 @@ class Query:
         return self.template_id
 
     def __str__(self):
-        return f"template: {self.template}\n\query string: {self.query_string}\npayload: {self.payload}\npredicates: {self.predicates}\norder_bys: {self.order_bys}"
+        return f"template: {self.template_id}\n\query string: {self.query_string}\npayload: {self.payload}\npredicates: {self.predicates}\norder_by: {self.order_by}"
 
 
 
@@ -133,6 +133,20 @@ def close_connection(connection):
     connection.close()
 
 
+def get_database_size(connection):
+    database_size = 10240
+    try:
+        query = "exec sp_spaceused @oneresultset = 1;"
+        cursor = connection.cursor()
+        cursor.execute(query)
+        result = cursor.fetchone()
+        database_size = float(result[4].split(" ")[0])/1024
+    except Exception as e:
+        logging.error("Exception when get_database_size: " + str(e))
+    return database_size
+
+
+
 def execute_simple(query, connection):
     cursor = connection.cursor()
     try:
@@ -147,8 +161,10 @@ def execute_simple(query, connection):
 def execute_query(query, connection, cost_type='elapsed_time', verbose=False):
     cursor = connection.cursor()
     try:
-        # clear cache
+        # clear out the buffer pool for cold start
         cursor.execute("DBCC DROPCLEANBUFFERS")
+        # Clear the procedure/query optimizer's cache
+        #cursor.execute("DBCC FREEPROCCACHE")
         # enable statistics collection
         cursor.execute("SET STATISTICS XML ON")
         # execute the query
@@ -183,6 +199,14 @@ def execute_query(query, connection, cost_type='elapsed_time', verbose=False):
         return float(query_plan.est_statement_sub_tree_cost), query_plan.non_clustered_index_usage, query_plan.clustered_index_usage
     else:
         return float(query_plan.est_statement_sub_tree_cost), query_plan.non_clustered_index_usage, query_plan.clustered_index_usage
+
+
+def bulk_execute_queries(queries, connection, cost_type='elapsed_time', verbose=False):
+    total_cost = 0
+    for query in queries:
+        elapsed_time, non_clustered_index_usage, clustered_index_usage = execute_query(query, connection, cost_type=cost_type, verbose=verbose)
+        total_cost += elapsed_time
+    return total_cost
 
 
 def create_nonclustered_index_query(query, connection, verbose=False):
@@ -292,13 +316,12 @@ def get_nonclustered_indexes(connection):
 def remove_all_nonclustered_indexes(connection, verbose=False):
     # get all non-clustered indexes
     indexes = get_nonclustered_indexes(connection)
-    print(f"All non-clustered indexes --> {indexes}")
+    #print(f"All non-clustered indexes --> {indexes}")
     # drop all non-clustered indexes
     for (schema_name, table_name, index_name) in indexes:
         drop_nonclustered_index(connection, schema_name=schema_name, table_name=table_name, index_name=index_name)
 
-    if verbose:
-        print("All nonclustered indexes removed.")
+    print(f"All {len(indexes)} nonclustered indexes removed.")
 
 
 # get size of all PDS in the database
@@ -390,6 +413,24 @@ def get_query_table_scan_times(connection, query_string, predicates):
     return table_scan_times
 
 
+# display table as pandas dataframe
+def display_table(connection, table, max_tuples=10):
+    # execute select query to retreive first max_tuples rows from the table
+    table_name = table.table_name
+    cursor = connection.cursor()
+    query = f"SELECT TOP {max_tuples} * FROM {table_name}"
+    cursor.execute(query)
+    rows = cursor.fetchall()
+    columns = [c.column_name for _, c in table.columns.items()]
+    df = pd.DataFrame.from_records(rows, columns=columns)
+    
+    pd.set_option('display.max_columns', None)  # Show all columns
+    pd.set_option('display.width', 1000)        # Set display width to None to auto-detect
+    print(df)
+    
+    cursor.close()
+
+
 # table object
 class Table:
     def __init__(self, table_name, row_count, pk_columns):
@@ -434,6 +475,18 @@ class Column:
     def __str__(self):
         return f"Column: {self.column_name}, Column Type Type: {self.column_type}, Column Size: {self.column_size}, Max Column Size: {self.max_column_size}"
 
+# index object
+class Index:
+    def __init__(self, table_name, index_id, index_columns, size, include_columns=(), value=None):
+        self.table_name = table_name
+        self.index_id = index_id
+        self.index_columns = index_columns
+        self.size = size
+        self.include_columns = include_columns
+        self.value = value
+
+    def __str__(self):
+        return f"Index({self.table_name}, {self.index_id}, {self.index_columns}, {self.include_columns}, {self.size}, {self.value})"
 
 # get number of rows in a given table
 def get_table_row_count(connection, schema_name, table_name):
@@ -550,6 +603,7 @@ def get_all_tables(connection, schema_name='dbo'):
                 table_name = result[0]
                 row_count = get_table_row_count(connection, schema_name, table_name)
                 pk_columns = get_primary_key_columns(connection, schema_name, table_name)
+                # cache the table object
                 tables[table_name] = Table(table_name, row_count, pk_columns)
                 tables[table_name].set_columns(get_table_columns(connection, schema_name, table_name))
 
@@ -636,7 +690,6 @@ def get_column_data_size(connection, table_name, columns):
     tables = get_all_tables(connection)
     varchar_count = 0
     column_data_size = 0
-
     for column_name in columns:
         column = tables[table_name].columns[column_name]
         if column.column_type == 'varchar':
@@ -722,6 +775,25 @@ def drop_noncluster_index_object(connection, index, schema_name='dbo', verbose=F
         cursor.close()
 
 
+# bulk create and drop non-clustered indexes
+def bulk_create_drop_nonclustered_indexes(connection, indexes_to_create, indexes_to_drop, schema_name='dbo', cost_type='elapsed_time', verbose=False):
+    if verbose:
+        print(f"Implementing configuration change: Creating {len(indexes_to_create)} indexes and dropping {len(indexes_to_drop)} indexes")
+    
+    # create indexes
+    creation_cost = {}
+    for index in indexes_to_create:
+        creation_cost[index.index_id] = create_nonclustered_index_object(connection, index, schema_name=schema_name, cost_type=cost_type, verbose=verbose)
+    # drop indexes
+    for index in indexes_to_drop:
+        drop_noncluster_index_object(connection, index, schema_name=schema_name, verbose=verbose)
+
+    if verbose:
+        print(f"Total index creation cost: {sum(creation_cost.values())}")
+
+    return creation_cost
+
+
 """
     Hypothetical Index Creation and Query Execution Cost Estimation
 """
@@ -738,6 +810,7 @@ def create_hypothetical_indexes(connection, indexes, schema_name='dbo', verbose=
             index_columns = index.index_columns
             include_columns = index.include_columns
 
+            # use the 'WITH STATISTICS_ONLY' option to create hypothetical indexes
             if include_columns:
                 query = f"CREATE NONCLUSTERED INDEX {index_id} ON {schema_name}.{table_name} ({', '.join(index_columns)}) " \
                         f"INCLUDE ({', '.join(include_columns)}) WITH STATISTICS_ONLY = -1"
@@ -799,18 +872,18 @@ def drop_all_hypothetical_indexes(connection, verbose=False):
 
 # enable all the hypothetical indexes so that they will be considered by optimizer when generating query plans for future queries
 def enable_all_hypothetical_indexes(connection, verbose=False):
-    query = '''SELECT dbid = Db_id(),
-                          objectid = object_id,
-                          indid = index_id
-                   FROM   sys.indexes
-                   WHERE  is_hypothetical = 1;'''
+    query = """ 
+                SELECT dbid = Db_id(), objectid = object_id, indid = index_id
+                FROM   sys.indexes
+                WHERE  is_hypothetical = 1;
+            """
     cursor = connection.cursor()
     try:    
         cursor.execute(query)
         result_rows = cursor.fetchall()
         for result_row in result_rows:
             if verbose: print(f"Enabling hypothetical index: {result_row}")
-            query_2 = f"DBCC AUTOPILOT(0, {result_row[0]}, {result_row[1]}, {result_row[2]})"
+            query_2 = f"DBCC AUTOPILOT(0, {result_row[0]}, {result_row[1]}, {result_row[2]}, 0, 0, 0)"
             cursor.execute(query_2)
         connection.commit()
     except Exception as e:
@@ -838,7 +911,8 @@ def disable_indexes(connection, indexes_to_disable, verbose=False):
         cursor.close()    
 
 
-# re-enable the indexes that were previously disabled
+# re-enable the indexes that were previously disabled    
+# ***WARNING*** This will rebuild the indexes from scratch and will be super SLOW
 def re_enable_indexes(connection, indexes_to_enable, verbose=False):
     try:
         cursor = connection.cursor()
@@ -856,14 +930,17 @@ def re_enable_indexes(connection, indexes_to_enable, verbose=False):
         cursor.close()    
 
 
-# hypothetically execute a query in the hypothetical configuration and estimate the cost
+# extract query plan for a query in the hypothetical configuration to estimate the execution cost
+"""
 def hypothetical_execute_query(connection, query, verbose=False):
-    enable_all_hypothetical_indexes(connection, verbose=verbose)
     cursor = connection.cursor()
     try:
+        # set AUTOPILOT so that hypothetical indexes are considered
         cursor.execute("SET AUTOPILOT ON")
+        cursor.execute("SET SHOWPLAN_XML ON")
         cursor.execute(query)
         stat_xml = cursor.fetchone()[0]
+        cursor.execute("SET SHOWPLAN_XML OFF")
         cursor.execute("SET AUTOPILOT OFF")
         query_plan = QueryPlan(stat_xml)
         return float(query_plan.est_statement_sub_tree_cost), query_plan.non_clustered_index_usage, query_plan.clustered_index_usage
@@ -873,37 +950,129 @@ def hypothetical_execute_query(connection, query, verbose=False):
         return None, None, None
     finally:
         cursor.close()
+"""
+
+
+def hypothetical_execute_query(connection, query, verbose=False):
+    cursor = connection.cursor()
+    try:
+        # Log start time
+        start_time = time.time()
+        
+        # set AUTOPILOT so that hypothetical indexes are considered
+        cursor.execute("SET AUTOPILOT ON")
+        cursor.execute("SET SHOWPLAN_XML ON")
+        
+        # Log time after setting AUTOPILOT and SHOWPLAN_XML
+        mid_time = time.time()
+        
+        cursor.execute(query)
+        stat_xml = cursor.fetchone()[0]
+        
+        # Log time after executing the query
+        end_time = time.time()
+        
+        cursor.execute("SET SHOWPLAN_XML OFF")
+        cursor.execute("SET AUTOPILOT OFF")
+        
+        query_plan = QueryPlan(stat_xml)
+        
+        # Log total time taken
+        total_time = end_time - start_time
+        setup_time = mid_time - start_time
+        execution_time = end_time - mid_time
+        
+        if verbose:
+            print(f"Setup time: {setup_time:.6f} seconds")
+            print(f"Execution time: {execution_time:.6f} seconds")
+            print(f"Total time: {total_time:.6f} seconds")
+        
+        return float(query_plan.est_statement_sub_tree_cost), query_plan.non_clustered_index_usage, query_plan.clustered_index_usage
+    
+    except Exception as e:
+        print(f"Error executing hypothetical query: {e}")
+        return None, None, None
+    finally:
+        cursor.close()
+
+
 
 # estimate the cost of executing a query in the current configuration from the query plan
-def estimate_query_cost(connection, query, cost_type='elapsed_time'):
+def estimate_query_cost(connection, query):
     cursor = connection.cursor()        
     try:
+        #cursor.execute("DBCC FREEPROCCACHE") # clear out query plan cache
         cursor.execute("SET SHOWPLAN_XML ON")
         cursor.execute(query)
         stat_xml = cursor.fetchone()[0]
         cursor.execute("SET SHOWPLAN_XML OFF")
         query_plan = QueryPlan(stat_xml)
-        return float(query_plan.est_statement_sub_tree_cost), query_plan.non_clustered_index_usage, query_plan.clustered_index_usage    
+        return float(query_plan.est_statement_sub_tree_cost), query_plan.non_clustered_index_usage, query_plan.clustered_index_usage   
+
     except Exception as e:
         print(f"Error estimating query cost: {e}")
         return None, None, None
-        
+    finally:
+        cursor.close()
 
-# estimate the cost of executing a query in a hypothetical configuration
-def hyp_configuration_cost_estimate(connection, indexes_added, indexes_removed, query, verbose=False):
-    original_execution_cost, non_clustered_index_usage, clustered_index_usage = estimate_query_cost(connection, query)
+# estimate bulk query cost
+def bulk_estimate_query_cost(connection, queries):
+    total_cost = 0
+    for query in queries:
+        cost, _, _ = estimate_query_cost(connection, query)
+        total_cost += cost
+    return total_cost
+
+
+# estimate the cost of executing a batch of queries in a hypothetical configuration
+def hyp_configuration_cost_estimate(connection, indexes_added, indexes_removed, queries, verbose=False):
+    
+    t1 = time.time()
     # create hypothetical indexes
     hyp_index_creation_cost = create_hypothetical_indexes(connection, indexes_added, verbose=verbose)
+    t2 = time.time()
+    print(f"Time taken to create hypothetical indexes: {t2-t1}")
     # disable removed indexes
+    t1 = time.time()
     disable_indexes(connection, indexes_removed, verbose=verbose)
+    t2 = time.time()
+    print(f"Time taken to disable indexes: {t2-t1}")
+
     # execute query in hypothetical configuration
-    hyp_execution_cost, non_clustered_index_usage, clustered_index_usage = hypothetical_execute_query(connection, query, verbose=verbose)
+    enable_all_hypothetical_indexes(connection, verbose=verbose)
+    total_hyp_cost = 0
+    total_orig_cost = 0
+    tH = 0
+    tO = 0
+    for query in queries:
+        t1 = time.time()
+        hyp_execution_cost, non_clustered_index_usage, clustered_index_usage = hypothetical_execute_query(connection, query, verbose=verbose)
+        t2 = time.time()
+        tH += (t2-t1)
+
+        t1 = time.time()
+        original_execution_cost, non_clustered_index_usage, clustered_index_usage = estimate_query_cost(connection, query)
+        t2 = time.time()
+        tO += (t2-t1)
+        
+        total_hyp_cost += hyp_execution_cost
+        total_orig_cost += original_execution_cost
+
+    print(f"Time to estimate --> Execution Cost Original: {tO}, Execution Cost Hypothetical: {tO}")
+
     # drop hypothetical indexes
+    t1 = time.time()
     drop_all_hypothetical_indexes(connection, verbose=verbose)
-    # re-enable oreviously disabled indexes
-    re_enable_indexes(connection, indexes_removed, verbose=verbose)
+    t2 = time.time()
+    print(f"Time taken to drop hypothetical indexes: {t2-t1}")
     
-    return original_execution_cost, hyp_execution_cost, hyp_index_creation_cost
+    # re-enable oreviously disabled indexes
+    t1 = time.time()
+    re_enable_indexes(connection, indexes_removed, verbose=verbose)
+    t2 = time.time()
+    print(f"Time taken to re-enable indexes: {t2-t1}\n")    
+
+    return total_orig_cost, total_hyp_cost, hyp_index_creation_cost
     
 
 
