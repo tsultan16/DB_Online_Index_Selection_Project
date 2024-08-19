@@ -113,13 +113,13 @@ def create_hypothetical_index(conn, index_object):
         # Use hypopg to create a hypothetical index
         cur.execute(f"SELECT * FROM hypopg_create_index('{index_definition}')")
         index_oid = cur.fetchone()[0]  # Get the OID of the hypothetical index
-        print(f"Hypothetical index '{index_id}' created successfully")
+        #print(f"Hypothetical index '{index_id}' created successfully")
 
         # Get the estimated size of the hypothetical index
         cur.execute(f"SELECT hypopg_relation_size({index_oid})")
         index_size_bytes = cur.fetchone()[0]
         index_size_mb = index_size_bytes / (1024 * 1024)  # Convert bytes to megabytes
-        print(f"Estimated size of hypothetical index '{index_id}': {index_size_mb:.2f} MB")
+        #print(f"Estimated size of hypothetical index '{index_id}': {index_size_mb:.2f} MB")
 
     except Exception as e:
         print(f"An error occurred while creating the hypothetical index: {e}")
@@ -130,6 +130,17 @@ def create_hypothetical_index(conn, index_object):
     cur.close()
 
     return index_oid, index_size_mb
+
+
+# bulk create hypothetical indexes
+def bulk_create_hypothetical_indexes(conn, index_objects):
+    hypo_indexes = []
+    for index_object in index_objects:
+        index_oid, index_size_mb = create_hypothetical_index(conn, index_object)
+        if index_oid:
+            hypo_indexes.append((index_oid, index_size_mb))
+
+    return hypo_indexes
 
 
 # drop the specified hypothetical index
@@ -149,7 +160,7 @@ def drop_hypothetical_index(conn, index_oid):
 
 
 # drop all hypothetical indexes
-def drop_all_hypothetical_indexes(conn):
+def bulk_drop_hypothetical_indexes(conn):
     """Drops all hypothetical indexes."""
     cur = conn.cursor()
     try:
@@ -163,6 +174,85 @@ def drop_all_hypothetical_indexes(conn):
     finally:
         cur.close()
 
+
+# show all available hypothetical indexes
+def list_hypothetical_indexes(conn):
+    """Lists all hypothetical indexes."""
+    cur = conn.cursor()
+    try:
+        # Query to list all hypothetical indexes
+        cur.execute("SELECT * FROM hypopg_list_indexes")
+        hypothetical_indexes = cur.fetchall()
+
+        # Print the hypothetical indexes
+        if hypothetical_indexes:
+            print("Hypothetical Indexes:")
+            for index in hypothetical_indexes:
+                print(f"OID: {index[0]}, Definition: {index[1]}")
+        else:
+            print("No hypothetical indexes found.")
+
+    except Exception as e:
+        print(f"An error occurred while listing hypothetical indexes: {e}")
+
+    finally:
+        cur.close()
+
+
+# get the estimated cost with hypothetical indexes
+def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False):
+    """Analyzes a query to obtain the estimated cost and check usage of index scans."""
+    cur = conn.cursor()
+    try:
+        # Execute the EXPLAIN query
+        explain_query = f"EXPLAIN (FORMAT JSON) {query}"
+        cur.execute(explain_query)
+        plan_json = cur.fetchone()[0]  # Fetch the JSON plan
+
+        if show_plan:
+            print(json.dumps(plan_json, indent=2))
+
+        # Extract the total cost
+        total_cost = plan_json[0]['Plan']['Total Cost']
+ 
+        # Check for index scan usage
+        index_scans = find_index_scans(plan_json[0]['Plan'])
+        
+        if index_scans:
+            print("Indexes used in the query plan:")
+            for index in index_scans:
+                print(f"- {index}")
+        else:
+            print("No index scans were explicitly noted in the query plan.")
+
+    except Exception as e:
+        print(f"An error occurred while analyzing the query: {e}")
+        total_cost = None
+
+    finally:
+        cur.close()
+
+    return total_cost    
+
+
+def find_index_scans(plan):
+    """Iterative search for index scan operations and extracts index names."""
+    indexes = set()  # Use a set to store unique index names
+    nodes_to_visit = [plan]  # Initialize the stack with the root plan node
+
+    while nodes_to_visit:
+        current_node = nodes_to_visit.pop()
+
+        # Check for Index Scan, Bitmap Index Scan, or Index Only Scan node type
+        if current_node.get('Node Type') in ['Index Scan', 'Bitmap Index Scan', 'Index Only Scan']:
+            index_name = current_node.get('Index Name')
+            if index_name:
+                indexes.add((index_name, current_node.get('Node Type')))
+
+        # Add subplans to the stack
+        nodes_to_visit.extend(current_node.get('Plans', []))
+
+    return indexes
 
 
 class Index:
@@ -202,7 +292,7 @@ def extract_query_indexes(query_object):
         predicate_cols = predicates[table]
         # create permutations of the predicate columns
         for i in range(1, len(predicate_cols)+1):
-            for index_key_cols in itertools.combinations(predicate_cols, i):
+            for index_key_cols in itertools.permutations(predicate_cols, i):
                 candidate_indexes.append(Index(table, get_index_id(index_key_cols, table), index_key_cols))
 
     return candidate_indexes            
