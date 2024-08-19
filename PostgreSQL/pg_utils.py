@@ -243,8 +243,8 @@ def find_index_scans(plan):
     while nodes_to_visit:
         current_node = nodes_to_visit.pop()
 
-        # Check for Index Scan, Bitmap Index Scan, or Index Only Scan node type
-        if current_node.get('Node Type') in ['Index Scan', 'Bitmap Index Scan', 'Index Only Scan']:
+        # Check for Index Scan or Index Only Scan node type
+        if current_node.get('Node Type') in ['Index Scan', 'Index Only Scan']: # , 'Bitmap Index Scan']:
             index_name = current_node.get('Index Name')
             if index_name:
                 indexes.add((index_name, current_node.get('Node Type')))
