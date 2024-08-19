@@ -30,7 +30,7 @@ def create_connection():
 def close_connection(conn):
     try:
         conn.close()
-        print("Connection closed")
+        #print("Connection closed")
     except Exception as e:
         print(f"Failed to close connection. An error occurred: {e}")
 
@@ -80,19 +80,36 @@ def get_query_cost_estimate(conn, query, show_plan=False):
         cur.execute(query)
         # Fetch and print the results
         execution_plan_json = cur.fetchone()[0]  # This is a list containing a single dictionary
-        cost_estimate = execution_plan_json[0]['Plan']['Total Cost']
+        total_cost = execution_plan_json[0]['Plan']['Total Cost']
+
+        # Initialize a stack for iterative traversal
+        stack = [execution_plan_json[0]['Plan']]
+        scan_costs = {}
+        # Iteratively process each node
+        while stack:
+            plan = stack.pop()
+            node_type = plan.get('Node Type', '')
+            if 'Scan' in node_type:
+                if node_type in scan_costs:
+                    scan_costs[node_type] += plan.get('Total Cost')
+                else:
+                    scan_costs[node_type] = plan.get('Total Cost')
+            # Add subplans to the stack for further processing
+            for subplan in plan.get('Plans', []):
+                stack.append(subplan)
 
         if show_plan:
             print(json.dumps(execution_plan_json, indent=2))
 
     except Exception as e:
         print(f"An error occurred while obtaining query optimizer cost estimate: {e}")
-        cost_estimate = None
+        total_cost = None
+        scan_costs = None
 
     # Close the cursor
     cur.close()
 
-    return cost_estimate
+    return total_cost, scan_costs
 
 
 # create a hypothetical index
@@ -150,7 +167,7 @@ def drop_hypothetical_index(conn, index_oid):
     try:
         # Drop a specific hypothetical index
         cur.execute(f"SELECT * FROM hypopg_drop_index({index_oid})")
-        print(f"Hypothetical index with OID {index_oid} has been dropped successfully.")
+        #print(f"Hypothetical index with OID {index_oid} has been dropped successfully.")
 
     except Exception as e:
         print(f"An error occurred while dropping the hypothetical index with OID {index_oid}: {e}")
@@ -166,7 +183,7 @@ def bulk_drop_hypothetical_indexes(conn):
     try:
         # Drop all hypothetical indexes
         cur.execute("SELECT * FROM hypopg_reset()")
-        print("All hypothetical indexes have been dropped successfully.")
+        #print("All hypothetical indexes have been dropped successfully.")
 
     except Exception as e:
         print(f"An error occurred while dropping all hypothetical indexes: {e}")
@@ -217,11 +234,15 @@ def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False):
  
         # Check for index scan usage
         index_scans = find_index_scans(plan_json[0]['Plan'])
-        
+        indexes_used = []
+
         if index_scans:
-            print("Indexes used in the query plan:")
+            #print("Indexes used in the query plan:")
             for index in index_scans:
-                print(f"- {index}")
+                #print(f"- {index}")
+                index_oid = int(index[0].split('<')[1].split('>')[0])
+                indexes_used.append((index_oid, index[1], index[2]))                
+
         else:
             print("No index scans were explicitly noted in the query plan.")
 
@@ -232,22 +253,22 @@ def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False):
     finally:
         cur.close()
 
-    return total_cost    
+    return total_cost, indexes_used  
 
 
 def find_index_scans(plan):
     """Iterative search for index scan operations and extracts index names."""
-    indexes = set()  # Use a set to store unique index names
+    indexes = list()  # Use a set to store unique index names
     nodes_to_visit = [plan]  # Initialize the stack with the root plan node
 
     while nodes_to_visit:
         current_node = nodes_to_visit.pop()
 
-        # Check for Index Scan or Index Only Scan node type
-        if current_node.get('Node Type') in ['Index Scan', 'Index Only Scan']: # , 'Bitmap Index Scan']:
+        # Check for nodes that indicate index scans
+        if current_node.get('Node Type') in ['Index Scan', 'Index Only Scan', 'Bitmap Index Scan']:
             index_name = current_node.get('Index Name')
             if index_name:
-                indexes.add((index_name, current_node.get('Node Type')))
+                indexes.append((index_name, current_node.get('Node Type'), current_node.get('Total Cost')))
 
         # Add subplans to the stack
         nodes_to_visit.extend(current_node.get('Plans', []))
@@ -280,20 +301,28 @@ def get_index_id(index_cols, table_name, include_cols=()):
 
 
 # enumerate candidate indexes that could benefit a given query
-def extract_query_indexes(query_object):
+def extract_query_indexes(query_object, include_cols=False):
     # use only the predicates for now
     predicates = query_object.predicates
-    #payload = query_object.payload
+    payload = query_object.payload
     #order_by = query_object.order_by
     #group_by = query_object.group_by
 
     candidate_indexes = []
     for table in predicates:
         predicate_cols = predicates[table]
+        payload_cols = payload[table] if table in payload else []
         # create permutations of the predicate columns
         for i in range(1, len(predicate_cols)+1):
             for index_key_cols in itertools.permutations(predicate_cols, i):
                 candidate_indexes.append(Index(table, get_index_id(index_key_cols, table), index_key_cols))
+                if include_cols:
+                    for j in range(1, len(payload_cols)+1):
+                        for index_include_cols in itertools.combinations(payload_cols, j):
+                            # remove include columns that intersect with key columns
+                            index_include_cols_filtered = tuple(set(index_include_cols) - set(index_key_cols))
+                            if index_include_cols_filtered:
+                                candidate_indexes.append(Index(table, get_index_id(index_key_cols, table, index_include_cols), index_key_cols, index_include_cols_filtered))    
 
     return candidate_indexes            
 
