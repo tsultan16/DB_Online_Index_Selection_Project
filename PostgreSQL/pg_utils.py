@@ -5,7 +5,7 @@
 import psycopg2
 import json
 import itertools
-
+import time
 
 
 # create connection to postgres DB
@@ -34,6 +34,73 @@ def close_connection(conn):
     except Exception as e:
         print(f"Failed to close connection. An error occurred: {e}")
 
+
+# get the size of the full database
+def get_database_size(conn):
+    cur = conn.cursor()
+    try:
+        # Query to get the size of the database in MB
+        cur.execute("SELECT pg_database_size(current_database()) / (1024 * 1024) AS size_mb")
+        database_size_mb = cur.fetchone()[0]
+
+    except Exception as e:
+        print(f"An error occurred while getting the database size: {e}")
+        database_size_mb = None
+
+    # Close the cursor
+    cur.close()
+
+    return database_size_mb
+
+
+# get the size of a table in the database
+def get_table_size(conn, table_name):
+    cur = conn.cursor()
+    try:
+        # Query to get the size of the table in MB
+        cur.execute(f"SELECT pg_total_relation_size('{table_name}') / (1024 * 1024) AS size_mb")
+        table_size_mb = cur.fetchone()[0]
+
+    except Exception as e:
+        print(f"An error occurred while getting the size of table '{table_name}': {e}")
+        table_size_mb = None
+
+    # Close the cursor
+    cur.close()
+
+    return table_size_mb
+
+
+# get sizes of all tables in the DB
+def get_all_table_sizes(conn):
+    try:
+        # Create a cursor object
+        cur = conn.cursor()
+
+        # Execute the query to get the sizes of all tables
+        query = """
+        SELECT
+            relname AS table_name,
+            pg_total_relation_size(relid) / (1024 * 1024) AS total_size_mb
+        FROM
+            pg_catalog.pg_statio_user_tables
+        ORDER BY
+            total_size_mb DESC;
+        """
+        cur.execute(query)
+        # Fetch the results
+        table_sizes = cur.fetchall()
+        # convert to dictionary
+        table_sizes = dict(table_sizes)
+
+        # Close the cursor
+        cur.close()
+
+    except Exception as e:
+        print(f"An error occurred while getting the sizes of all tables: {e}")
+        table_sizes = None
+    
+    return table_sizes
 
 # execute a query on postgres DB
 def execute_query(conn, query, with_explain=True, print_results=False):
@@ -81,36 +148,44 @@ def create_index(conn, index_object):
     # Create a cursor object
     cur = conn.cursor()
     try:
+
         # Construct the index definition string
         index_columns_str = ', '.join(index_columns)
         include_clause = f" INCLUDE ({', '.join(include_columns)})" if include_columns else ""
         index_definition = f"CREATE INDEX {index_id} ON {table_name} ({index_columns_str}){include_clause}"
 
+        start_time = time.perf_counter()
         # Execute the CREATE INDEX statement to create a real index
         cur.execute(index_definition)
         conn.commit()  # Commit the transaction to make the index creation permanent
         #print(f"Real index '{index_id}' created successfully")
 
+        end_time = time.perf_counter()
+        creation_time = end_time - start_time
+
         # Get the size of the newly created index
         cur.execute(f"SELECT pg_size_pretty(pg_relation_size('{index_id}'))")
         index_size = cur.fetchone()[0]
-        print(f"Successfully created index '{index_id}': {index_size}")
+ 
+        print(f"Successfully created index '{index_id}': {index_size}, creation time: {creation_time:.2f} seconds")
 
     except Exception as e:
         print(f"An error occurred while creating the real index: {e}")
         index_size = None
+        creation_time = None
 
     # Close the cursor
     cur.close()
 
-    return index_size
+    return index_size, creation_time
 
 
 # bulk create real indexes
 def bulk_create_indexes(conn, index_objects):
     for index_object in index_objects:
-        index_size_mb = create_index(conn, index_object)
+        index_size_mb, creation_time = create_index(conn, index_object)
         index_object.size = index_size_mb
+        index_object.creation_time = creation_time
 
 
 # drop a real index
@@ -393,6 +468,7 @@ class Index:
         self.index_columns = index_columns
         self.include_columns = include_columns
         self.size = None
+        self.creation_time = None
 
     def __str__(self):
         return f"Index name: {self.index_id}, Key cols: {self.index_columns}, Include cols: {self.include_columns}"
