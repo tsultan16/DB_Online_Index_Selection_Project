@@ -253,7 +253,14 @@ class QGEN:
                 AND p_category = '{category}'
                 GROUP BY d_year, s_city, p_brand
                 ORDER BY d_year, s_city, p_brand;
-            """ 
+            """,
+            
+            14: """
+                SELECT lo_linenumber, lo_quantity, lo_orderdate  
+                FROM lineorder
+                WHERE lo_linenumber >= {linenumber_low} AND lo_linenumber <= {linenumber_high}
+                AND lo_quantity = {quantity};
+            """, 
             }
         
         self.predicates = {1: {"lineorder": ["lo_orderdate", "lo_discount", "lo_quantity"], "dwdate": ["d_datekey", "d_year"]},
@@ -283,7 +290,9 @@ class QGEN:
                    "part": ["p_partkey", "p_mfgr", "p_category"], "supplier": ["s_suppkey", "s_region"]},
               13: {"lineorder": ["lo_custkey", "lo_suppkey", "lo_orderdate", "lo_partkey"],
                    "dwdate": ["d_year", "d_datekey"], "customer": ["c_custkey", "c_nation"],
-                   "part": ["p_partkey", "p_mfgr", "p_category"], "supplier": ["s_suppkey", "s_nation"]}}
+                   "part": ["p_partkey", "p_mfgr", "p_category"], "supplier": ["s_suppkey", "s_nation"]},
+              14: {"lineorder": ["lo_linenumber", "lo_quantity"]}  
+              }
 
         self.payloads = {1: {"lineorder": ["lo_extendedprice", "lo_discount"]},
                     2: {"lineorder": ["lo_extendedprice", "lo_discount"]},
@@ -299,7 +308,9 @@ class QGEN:
                     12: {"lineorder": ["lo_revenue", "lo_supplycost"], "dwdate": ["d_year"], "part": ["p_category"],
                         "supplier": ["s_nation"]},
                     13: {"lineorder": ["lo_revenue", "lo_supplycost"], "dwdate": ["d_year"], "part": ["p_brand"],
-                        "supplier": ["s_city"]}}
+                        "supplier": ["s_city"]},
+                    14: {"lineorder": ["lo_linenumber", "lo_quantity", "lo_orderdate"]},  
+                    }
 
         self.order_bys = {1: {},
                     2: {},
@@ -313,7 +324,9 @@ class QGEN:
                     10: {"lineorder": ["lo_revenue"], "dwdate": ["d_year"]},
                     11: {"dwdate": ["d_year"], "customer": ["c_nation"]},
                     12: {"dwdate": ["d_year"], "part": ["p_category"], "supplier": ["s_nation"]},
-                    13: {"dwdate": ["d_year"], "part": ["p_brand"], "supplier": ["s_city"]}}
+                    13: {"dwdate": ["d_year"], "part": ["p_brand"], "supplier": ["s_city"]},
+                    14: {}
+                    }
 
         self.group_bys = {1: {},
                     2: {},
@@ -327,7 +340,9 @@ class QGEN:
                     10: {"customer": ["c_city"], "supplier": ["s_city"], "dwdate": ["d_year"]},
                     11: {"customer": ["c_nation"], "dwdate": ["d_year"]},
                     12: {"part": ["p_category"], "supplier": ["s_nation"], "dwdate": ["d_year"]},
-                    13: {"part": ["p_brand"], "supplier": ["s_city"], "dwdate": ["d_year"]}}
+                    13: {"part": ["p_brand"], "supplier": ["s_city"], "dwdate": ["d_year"]},
+                    14: {}
+        }
 
 
 
@@ -484,6 +499,17 @@ class QGEN:
             category = random.choice(list(category_stats['histogram'].keys()))
 
             query = template.format(region=region, nation=nation, year_1=year_1, year_2=year_2, category=category)
+
+        elif template_num == 14:
+            linenumber_stats = self.stats['lineorder']['lo_linenumber']
+            quantity_stats = self.stats['lineorder']['lo_quantity']
+
+            linenumber_low = random.randint(linenumber_stats['min'], linenumber_stats['max']-2)
+            linenumber_high = linenumber_low + 1
+            quantity = random.randint(quantity_stats['min'], quantity_stats['max'])
+
+            query = template.format(linenumber_low=linenumber_low, linenumber_high=linenumber_high, quantity=quantity)
+
 
         # create Query object
         query = Query(template_num, query, self.payloads[template_num], self.predicates[template_num], self.order_bys[template_num], self.group_bys[template_num])
