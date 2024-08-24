@@ -119,7 +119,7 @@ def execute_query(conn, query, with_explain=True, print_results=False):
 
         else:        
             cur.execute(query)
-            # Fetch and print the results
+            # Fetch and print the results (first 10 rows only)
             rows = cur.fetchall()
             if print_results:
                 i = 0
@@ -295,7 +295,7 @@ def get_query_cost_estimate(conn, query, show_plan=False):
 
 
 # create a hypothetical index
-def create_hypothetical_index(conn, index_object):
+def create_hypothetical_index(conn, index_object, return_size=False):
     table_name = index_object.table_name
     index_id = index_object.index_id
     index_columns = index_object.index_columns
@@ -314,11 +314,12 @@ def create_hypothetical_index(conn, index_object):
         index_oid = cur.fetchone()[0]  # Get the OID of the hypothetical index
         #print(f"Hypothetical index '{index_id}' created successfully")
 
-        # Get the estimated size of the hypothetical index
-        cur.execute(f"SELECT hypopg_relation_size({index_oid})")
-        index_size_bytes = cur.fetchone()[0]
-        index_size_mb = index_size_bytes / (1024 * 1024)  # Convert bytes to megabytes
-        #print(f"Estimated size of hypothetical index '{index_id}': {index_size_mb:.2f} MB")
+        if return_size:
+            # Get the estimated size of the hypothetical index
+            cur.execute(f"SELECT hypopg_relation_size({index_oid})")
+            index_size_bytes = cur.fetchone()[0]
+            index_size_mb = index_size_bytes / (1024 * 1024)  # Convert bytes to megabytes
+            #print(f"Estimated size of hypothetical index '{index_id}': {index_size_mb:.2f} MB")
 
     except Exception as e:
         print(f"An error occurred while creating the hypothetical index: {e}")
@@ -328,16 +329,23 @@ def create_hypothetical_index(conn, index_object):
     # Close the cursor
     cur.close()
 
-    return index_oid, index_size_mb
-
+    if return_size:
+        return index_oid, index_size_mb
+    else:
+        return index_oid
 
 # bulk create hypothetical indexes
-def bulk_create_hypothetical_indexes(conn, index_objects):
+def bulk_create_hypothetical_indexes(conn, index_objects, return_size=False):
     hypo_indexes = []
     for index_object in index_objects:
-        index_oid, index_size_mb = create_hypothetical_index(conn, index_object)
-        if index_oid:
-            hypo_indexes.append((index_oid, index_size_mb))
+        if return_size:
+            index_oid, index_size_mb = create_hypothetical_index(conn, index_object, return_size)
+            if index_oid:
+                hypo_indexes.append((index_oid, index_size_mb))
+        else:
+            index_oid = create_hypothetical_index(conn, index_object)
+            if index_oid:
+                hypo_indexes.append(index_oid)
 
     return hypo_indexes
 
@@ -434,11 +442,39 @@ def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False):
     except Exception as e:
         print(f"An error occurred while analyzing the query: {e}")
         total_cost = None
+        indexes_used = None
 
     finally:
         cur.close()
 
     return total_cost, indexes_used  
+
+
+
+# hypothetical query execution speedup due to a configuration change from X_old to X_new 
+def hypo_query_speedup(conn, query_object, X_old, X_new):
+    # create hypothetical indexes for X_old 
+    X_old_indexes = bulk_create_hypothetical_indexes(conn, X_old)
+    # get estimated cost in configuration X_old
+    cost_old, indexes_used = get_query_cost_estimate_hypo_indexes(conn, query_object.query_string, show_plan=False)
+    # drop hypothetical indexes for X_old
+    bulk_drop_hypothetical_indexes(conn)
+
+    # create hypothetical indexes for X_new
+    X_new_indexes = bulk_create_hypothetical_indexes(conn, X_new)
+    # get estimated cost in configuration X_new
+    cost_new, indexes_used = get_query_cost_estimate_hypo_indexes(conn, query_object.query_string, show_plan=False)
+    # drop hypothetical indexes for X_new
+    bulk_drop_hypothetical_indexes(conn)
+
+    # calculate speedup
+    if cost_old and cost_new:
+        speedup = cost_old / cost_new
+    else:
+        speedup = None
+
+    return speedup, cost_new
+
 
 
 def find_index_scans(plan):
@@ -488,28 +524,40 @@ def get_index_id(index_cols, table_name, include_cols=()):
 
 
 # enumerate candidate indexes that could benefit a given query
-def extract_query_indexes(query_object, include_cols=False):
-    # use only the predicates for now
+# TODO: option for max number of index key/include columns 
+def extract_query_indexes(query_object, max_key_columns=None, include_cols=False):
+    # use only the predicates and payloads for now
     predicates = query_object.predicates
     payload = query_object.payload
     #order_by = query_object.order_by
     #group_by = query_object.group_by
 
-    candidate_indexes = []
+    candidate_indexes = {}
     for table in predicates:
         predicate_cols = predicates[table]
         payload_cols = payload[table] if table in payload else []
         # create permutations of the predicate columns
-        for i in range(1, len(predicate_cols)+1):
+        if max_key_columns:
+            max_predicates = min(max_key_columns, len(predicate_cols))
+        else:
+            max_predicates = len(predicate_cols)    
+        for i in range(1, max_predicates+1):
             for index_key_cols in itertools.permutations(predicate_cols, i):
-                candidate_indexes.append(Index(table, get_index_id(index_key_cols, table), index_key_cols))
+                index_id = get_index_id(index_key_cols, table)
+                if index_id not in candidate_indexes:
+                    candidate_indexes[index_id] = Index(table, index_id, index_key_cols)
                 if include_cols:
-                    for j in range(1, len(payload_cols)+1):
-                        for index_include_cols in itertools.combinations(payload_cols, j):
+                    # remove payload columns that intersect with key columns
+                    payload_columns_filtered = tuple(set(payload_cols) - set(index_key_cols))
+                    for j in range(1, len(payload_columns_filtered)+1):
+                        for index_include_cols in itertools.combinations(payload_columns_filtered, j):
                             # remove include columns that intersect with key columns
-                            index_include_cols_filtered = tuple(set(index_include_cols) - set(index_key_cols))
-                            if index_include_cols_filtered:
-                                candidate_indexes.append(Index(table, get_index_id(index_key_cols, table, index_include_cols_filtered), index_key_cols, index_include_cols_filtered))    
+                            if index_include_cols:
+                                index_id = get_index_id(index_key_cols, table, index_include_cols)
+                                if index_id not in candidate_indexes:
+                                    candidate_indexes[index_id] = Index(table, index_id, index_key_cols, index_include_cols)  
+
+    candidate_indexes = list(candidate_indexes.values())
 
     return candidate_indexes            
 
