@@ -453,19 +453,10 @@ def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False):
 
 # hypothetical query execution speedup due to a configuration change from X_old to X_new 
 def hypo_query_speedup(conn, query_object, X_old, X_new):
-    # create hypothetical indexes for X_old 
-    X_old_indexes = bulk_create_hypothetical_indexes(conn, X_old)
     # get estimated cost in configuration X_old
-    cost_old, indexes_used = get_query_cost_estimate_hypo_indexes(conn, query_object.query_string, show_plan=False)
-    # drop hypothetical indexes for X_old
-    bulk_drop_hypothetical_indexes(conn)
-
-    # create hypothetical indexes for X_new
-    X_new_indexes = bulk_create_hypothetical_indexes(conn, X_new)
+    cost_old = hypo_query_cost(conn, query_object, X_old)
     # get estimated cost in configuration X_new
-    cost_new, indexes_used = get_query_cost_estimate_hypo_indexes(conn, query_object.query_string, show_plan=False)
-    # drop hypothetical indexes for X_new
-    bulk_drop_hypothetical_indexes(conn)
+    cost_new = hypo_query_cost(conn, query_object, X_new)
 
     # calculate speedup
     if cost_old and cost_new:
@@ -475,6 +466,16 @@ def hypo_query_speedup(conn, query_object, X_old, X_new):
 
     return speedup, cost_new
 
+
+# estimated cost of a query in a given hypothetical configuration X
+def hypo_query_cost(conn, query_object, X):
+    # create hypothetical indexes for X
+    X_indexes = bulk_create_hypothetical_indexes(conn, X)
+    # get estimated cost in configuration X
+    cost, indexes_used = get_query_cost_estimate_hypo_indexes(conn, query_object.query_string, show_plan=False)
+    # drop hypothetical indexes for X
+    bulk_drop_hypothetical_indexes(conn)
+    return cost
 
 
 def find_index_scans(plan):
