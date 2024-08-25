@@ -10,13 +10,11 @@ import time
 
 # create connection to postgres DB
 def create_connection():
-    # Define your connection parameters
     connection_params = {
         "dbname": "SSB10",
-        "user": "postgres",
-        "password": "greatpond501",
+        "user": "tanzid",
         "host": "localhost",
-        "port": "5432"
+        "port": "5433"
     }
     try:
         conn = psycopg2.connect(**connection_params)
@@ -160,32 +158,38 @@ def create_index(conn, index_object):
         conn.commit()  # Commit the transaction to make the index creation permanent
         #print(f"Real index '{index_id}' created successfully")
 
+
+        # Get the size of the newly created index (in Mb)
+        cur.execute(f"SELECT pg_relation_size('{index_id}') / 1048576.0")
+        index_size = cur.fetchone()[0]
+
+        # Retrieve the OID of the newly created index
+        cur.execute(f"SELECT oid FROM pg_class WHERE relname = '{index_id.lower()}'")
+        index_oid = cur.fetchone()[0]
+ 
         end_time = time.perf_counter()
         creation_time = end_time - start_time
-
-        # Get the size of the newly created index
-        cur.execute(f"SELECT pg_size_pretty(pg_relation_size('{index_id}'))")
-        index_size = cur.fetchone()[0]
- 
-        print(f"Successfully created index '{index_id}': {index_size}, creation time: {creation_time:.2f} seconds")
+        print(f"Successfully created index: '{index_id}', size: {index_size} MB, creation time: {creation_time:.2f} seconds")
 
     except Exception as e:
         print(f"An error occurred while creating the real index: {e}")
         index_size = None
+        index_oid = None
         creation_time = None
 
     # Close the cursor
     cur.close()
 
-    return index_size, creation_time
+    return index_oid, index_size, creation_time
 
 
 # bulk create real indexes
 def bulk_create_indexes(conn, index_objects):
     for index_object in index_objects:
-        index_size_mb, creation_time = create_index(conn, index_object)
+        index_oid, index_size_mb, creation_time = create_index(conn, index_object)
         index_object.size = index_size_mb
         index_object.creation_time = creation_time
+        index_object.current_oid = index_oid
 
 
 # drop a real index
@@ -201,6 +205,10 @@ def drop_index(conn, index_object):
         # Execute the DROP INDEX statement
         cur.execute(drop_index_query)
         conn.commit()  # Commit the transaction to make the index drop permanent
+
+        # erase oid
+        index_object.current_oid = None
+
         print(f"Index '{index_id}' dropped successfully")
 
     except Exception as e:
@@ -452,11 +460,11 @@ def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False):
 
 
 # hypothetical query execution speedup due to a configuration change from X_old to X_new 
-def hypo_query_speedup(conn, query_object, X_old, X_new):
+def hypo_query_speedup(conn, query_object, X_old, X_new, currently_materialized_indexes=[]):
     # get estimated cost in configuration X_old
-    cost_old = hypo_query_cost(conn, query_object, X_old)
+    cost_old = hypo_query_cost(conn, query_object, X_old, currently_materialized_indexes)
     # get estimated cost in configuration X_new
-    cost_new = hypo_query_cost(conn, query_object, X_new)
+    cost_new = hypo_query_cost(conn, query_object, X_new, currently_materialized_indexes)
 
     # calculate speedup
     if cost_old and cost_new:
@@ -468,14 +476,59 @@ def hypo_query_speedup(conn, query_object, X_old, X_new):
 
 
 # estimated cost of a query in a given hypothetical configuration X
-def hypo_query_cost(conn, query_object, X):
+def hypo_query_cost(conn, query_object, X, currently_materialized_indexes=[]):
     # create hypothetical indexes for X
     X_indexes = bulk_create_hypothetical_indexes(conn, X)
+    # hide existing indexes
+    bulk_hide_indexes(conn, currently_materialized_indexes)
     # get estimated cost in configuration X
     cost, indexes_used = get_query_cost_estimate_hypo_indexes(conn, query_object.query_string, show_plan=False)
     # drop hypothetical indexes for X
     bulk_drop_hypothetical_indexes(conn)
+    # unhide existing indexes
+    bulk_unhide_indexes(conn, currently_materialized_indexes)
     return cost
+
+
+# Hides an existing index using HypoPG.
+def hide_index(conn, index_oid):
+    cur = conn.cursor()
+    try:
+        # Hide the index using its OID
+        cur.execute(f"SELECT hypopg_hide_index({index_oid})")
+        result = cur.fetchone()[0]
+        print(f"Index with OID {index_oid} hidden: {result}")
+        return result
+    except Exception as e:
+        print(f"An error occurred while hiding the index: {e}")
+        return False
+    finally:
+        cur.close()
+
+
+def bulk_hide_indexes(conn, index_objects):
+    for index in index_objects:
+        hide_index(conn, index.current_oid)
+
+
+# Unhides a previously hidden index using HypoPG.
+def unhide_index(conn, index_oid):
+    cur = conn.cursor()
+    try:
+        # Unhide the index using its OID
+        cur.execute(f"SELECT hypopg_unhide_index({index_oid})")
+        result = cur.fetchone()[0]
+        print(f"Index with OID {index_oid} unhidden: {result}")
+        return result
+    except Exception as e:
+        print(f"An error occurred while unhiding the index: {e}")
+        return False
+    finally:
+        cur.close()
+
+def bulk_unhide_indexes(conn, index_objects):
+    for index in index_objects:
+        unhide_index(conn, index.current_oid)        
 
 
 def find_index_scans(plan):
@@ -506,18 +559,19 @@ class Index:
         self.include_columns = include_columns
         self.size = None
         self.creation_time = None
+        self.current_oid = None
 
     def __str__(self):
-        return f"Index name: {self.index_id}, Key cols: {self.index_columns}, Include cols: {self.include_columns}"
+        return f"Index name: {self.index_id}, Key cols: {self.index_columns}, Include cols: {self.include_columns}, Current OID: {self.current_oid}"
 
 
 # assign a unique id to a given index
 def get_index_id(index_cols, table_name, include_cols=()):
     if include_cols:
         include_col_names = '_'.join(tuple(map(lambda x: x[0:4], include_cols))).lower()
-        index_id = 'IXN_' + table_name + '_' + '_'.join(index_cols).lower() + '_' + include_col_names
+        index_id = 'ixn_' + table_name.lower() + '_' + '_'.join(index_cols).lower() + '_' + include_col_names
     else:
-        index_id = 'IX_' + table_name + '_' + '_'.join(index_cols).lower()
+        index_id = 'ix_' + table_name.lower() + '_' + '_'.join(index_cols).lower()
     
     # truncate to 128 chars
     index_id = index_id[:127]
