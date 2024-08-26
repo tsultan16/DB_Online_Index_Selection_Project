@@ -68,6 +68,26 @@ def get_table_size(conn, table_name):
 
     return table_size_mb
 
+# get the size of a table  and its row count 
+def get_table_size_and_row_count(conn, table_name):
+    query = f"""
+            SELECT pg_total_relation_size('{table_name}') / (1024 * 1024) AS size_mb, (SELECT COUNT(*) FROM {table_name}) AS row_count
+            """
+    try:
+        cur = conn.cursor()
+        cur.execute(query)
+        result = cur.fetchone()
+        table_info =  {"size": result[0], "row_count": result[1]}
+        
+        # Close the cursor
+        cur.close()
+
+    except Exception as e:
+        print(f"An error occurred while getting the size and row count of table '{table_name}': {e}")
+        table_info = None    
+     
+    return table_info
+
 
 # get sizes of all tables in the DB
 def get_all_table_sizes(conn):
@@ -101,14 +121,14 @@ def get_all_table_sizes(conn):
     return table_sizes
 
 # execute a query on postgres DB
-def execute_query(conn, query, with_explain=True, print_results=False):
+def execute_query(conn, query_string, with_explain=True, print_results=False):
     # Create a cursor object
     cur = conn.cursor()
     try:
         # Execute a query
         if with_explain:
-            query = f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}"
-            cur.execute(query)
+            query_string = f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query_string}"
+            cur.execute(query_string)
             execution_plan_json = cur.fetchone()[0]
             # Parse the JSON result
             if print_results: print(json.dumps(execution_plan_json, indent=2))
@@ -116,7 +136,7 @@ def execute_query(conn, query, with_explain=True, print_results=False):
             total_execution_time = execution_plan_json[0]['Plan'].get('Actual Total Time')
 
         else:        
-            cur.execute(query)
+            cur.execute(query_string)
             # Fetch and print the results (first 10 rows only)
             rows = cur.fetchall()
             if print_results:
@@ -302,6 +322,21 @@ def get_query_cost_estimate(conn, query, show_plan=False):
     return total_cost, scan_costs
 
 
+
+# assign hypothetical index sizes to the given index objects
+def get_hypothetical_index_sizes(conn, index_objects):
+    # create hypothetical indexes and get their estimated size
+    index_size = {}
+    for index in index_objects:
+        index_oid, index_size_mb = create_hypothetical_index(conn, index, return_size=True)
+        size[index.index_id] = index_size_mb
+
+    # drop all the hypothetical indexes
+    bulk_drop_hypothetical_indexes(conn)   
+
+    return index_size
+
+
 # create a hypothetical index
 def create_hypothetical_index(conn, index_object, return_size=False):
     table_name = index_object.table_name
@@ -458,7 +493,6 @@ def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False):
     return total_cost, indexes_used  
 
 
-
 # hypothetical query execution speedup due to a configuration change from X_old to X_new 
 def hypo_query_speedup(conn, query_object, X_old, X_new, currently_materialized_indexes=[]):
     # get estimated cost in configuration X_old
@@ -497,7 +531,7 @@ def hide_index(conn, index_oid):
         # Hide the index using its OID
         cur.execute(f"SELECT hypopg_hide_index({index_oid})")
         result = cur.fetchone()[0]
-        print(f"Index with OID {index_oid} hidden: {result}")
+        #print(f"Index with OID {index_oid} hidden: {result}")
         return result
     except Exception as e:
         print(f"An error occurred while hiding the index: {e}")
@@ -518,7 +552,7 @@ def unhide_index(conn, index_oid):
         # Unhide the index using its OID
         cur.execute(f"SELECT hypopg_unhide_index({index_oid})")
         result = cur.fetchone()[0]
-        print(f"Index with OID {index_oid} unhidden: {result}")
+        #print(f"Index with OID {index_oid} unhidden: {result}")
         return result
     except Exception as e:
         print(f"An error occurred while unhiding the index: {e}")
@@ -526,11 +560,13 @@ def unhide_index(conn, index_oid):
     finally:
         cur.close()
 
+
 def bulk_unhide_indexes(conn, index_objects):
     for index in index_objects:
         unhide_index(conn, index.current_oid)        
 
 
+# find index scans in the query plan
 def find_index_scans(plan):
     """Iterative search for index scan operations and extracts index names."""
     indexes = list()  # Use a set to store unique index names
@@ -549,6 +585,60 @@ def find_index_scans(plan):
         nodes_to_visit.extend(current_node.get('Plans', []))
 
     return indexes
+
+
+# measure sequential scan time for a table (make sure there are no secondary indexes on the table)
+def get_sequential_scan_time(conn, table_name):
+    cur = conn.cursor()
+    try:
+        # Construct a query that will likely result in a sequential scan
+        query_string = f"SELECT * FROM {table_name};"
+        # get the execution plan
+        explain_query = f"EXPLAIN (ANALYZE, FORMAT JSON) {query_string}"
+        cur.execute(explain_query)
+        execution_plan_json = cur.fetchone()[0]
+
+        #total_execution_time = execution_plan_json[0]['Plan'].get('Actual Total Time')
+
+        # Extract the time taken by the sequential scan operator
+        """    
+        seq_scan_time = None
+        seq_scan_found = False
+        for plan_node in execution_plan_json[0]['Plan']:
+            if plan_node['Node Type'] == 'Seq Scan':
+                # Extract the actual time from the plan node
+                seq_scan_time = plan_node['Actual Total Time']
+                seq_scan_found = True
+                break
+        """
+        nodes_to_visit = [execution_plan_json[0]['Plan']]  # Initialize the stack with the root plan node
+        while nodes_to_visit:
+            current_node = nodes_to_visit.pop()
+
+            # Check for nodes that indicate index scans
+            if current_node.get('Node Type') == 'Seq Scan':
+                seq_scan_time = current_node.get('Actual Total Time')
+                seq_scan_found = True
+                break
+
+            # Add subplans to the stack
+            nodes_to_visit.extend(current_node.get('Plans', []))
+
+
+        # Close the cursor
+        cur.close()       
+
+        if not seq_scan_found:
+            print("Sequential scan operator not found in the query plan.")
+        else:
+            print(f"Sequential scan time for table '{table_name}': {seq_scan_time:.2f} ms")    
+        
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        seq_scan_time = None
+
+    return seq_scan_time    
 
 
 class Index:
