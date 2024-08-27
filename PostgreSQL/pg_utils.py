@@ -633,7 +633,7 @@ def extract_access_info(plan):
                 shared_read_blocks = current_node.get('Shared Read Blocks')
                 local_hit_blocks = current_node.get('Local Hit Blocks')
                 local_read_blocks = current_node.get('Local Read Blocks')
-                bitmap_heapscan_info[index_name] = {'table':table_name, 'scan_type': scan_type, 'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}
+                bitmap_heapscan_info[table_name] = {'table':table_name, 'scan_type': scan_type, 'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}
 
 
         # check for nodes that indicate table sequential scans
