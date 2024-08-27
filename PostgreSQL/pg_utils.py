@@ -606,7 +606,7 @@ def extract_access_info(plan):
         current_node = nodes_to_visit.pop()
 
         # check for nodes that indicate index scans
-        if current_node.get('Node Type') in ['Index Scan', 'Index Only Scan', 'Bitmap Index Scan']:
+        if current_node.get('Node Type') in ['Index Scan', 'Index Only Scan', 'Bitmap Index Scan', 'Bitmap Heap Scan']:
             index_name = current_node.get('Index Name')
             if index_name:
                 scan_type = current_node.get('Node Type')
