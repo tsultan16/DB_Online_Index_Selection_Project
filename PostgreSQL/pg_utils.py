@@ -120,8 +120,9 @@ def get_all_table_sizes(conn):
     
     return table_sizes
 
+
 # execute a query on postgres DB
-def execute_query(conn, query_string, with_explain=True, print_results=False):
+def execute_query(conn, query_string, with_explain=True,  return_access_info=False, print_results=False):
     # Create a cursor object
     cur = conn.cursor()
     try:
@@ -135,6 +136,9 @@ def execute_query(conn, query_string, with_explain=True, print_results=False):
             rows = None
             total_execution_time = execution_plan_json[0]['Plan'].get('Actual Total Time')
 
+            if return_access_info:
+                table_access_info, index_access_info = extract_access_info(execution_plan_json[0]['Plan'])
+            
         else:        
             cur.execute(query_string)
             # Fetch and print the results (first 10 rows only)
@@ -153,6 +157,9 @@ def execute_query(conn, query_string, with_explain=True, print_results=False):
 
     # Close the cursor
     cur.close()
+    if return_access_info:
+        return total_execution_time, rows, table_access_info, index_access_info
+
     return total_execution_time, rows
 
 
@@ -188,8 +195,8 @@ def create_index(conn, index_object):
         index_oid = cur.fetchone()[0]
  
         end_time = time.perf_counter()
-        creation_time = end_time - start_time
-        print(f"Successfully created index: '{index_id}', size: {index_size} MB, creation time: {creation_time:.2f} seconds")
+        creation_time = (end_time - start_time)*1000
+        print(f"Successfully created index: '{index_id}', size: {index_size} MB, creation time: {creation_time:.2f} ms")
 
     except Exception as e:
         print(f"An error occurred while creating the real index: {e}")
@@ -207,7 +214,7 @@ def create_index(conn, index_object):
 def bulk_create_indexes(conn, index_objects):
     for index_object in index_objects:
         index_oid, index_size_mb, creation_time = create_index(conn, index_object)
-        index_object.size = index_size_mb
+        index_object.size = float(index_size_mb)
         index_object.creation_time = creation_time
         index_object.current_oid = index_oid
 
@@ -329,7 +336,7 @@ def get_hypothetical_index_sizes(conn, index_objects):
     index_size = {}
     for index in index_objects:
         index_oid, index_size_mb = create_hypothetical_index(conn, index, return_size=True)
-        size[index.index_id] = index_size_mb
+        index_size[index.index_id] = float(index_size_mb)
 
     # drop all the hypothetical indexes
     bulk_drop_hypothetical_indexes(conn)   
@@ -587,6 +594,53 @@ def find_index_scans(plan):
     return indexes
 
 
+# extract information about all access methods used in the query plan
+def extract_access_info(plan):
+    """Iterative search for all access methods used in the query plan."""
+    # dictionaries to store access method information
+    table_access_info = {}  
+    index_access_info = {}
+    nodes_to_visit = [plan]  # Initialize the stack with the root plan node
+
+    while nodes_to_visit:
+        current_node = nodes_to_visit.pop()
+
+        # check for nodes that indicate index scans
+        if current_node.get('Node Type') in ['Index Scan', 'Index Only Scan', 'Bitmap Index Scan']:
+            index_name = current_node.get('Index Name')
+            if index_name:
+                scan_type = current_node.get('Node Type')
+                actual_rows = current_node.get('Actual Rows')
+                actual_startup_time = current_node.get('Actual Startup Time')
+                actual_total_time = current_node.get('Actual Total Time')  
+                table_name = current_node.get('Relation Name')      
+                shared_hit_blocks = current_node.get('Shared Hit Blocks')
+                shared_read_blocks = current_node.get('Shared Read Blocks')
+                local_hit_blocks = current_node.get('Local Hit Blocks')
+                local_read_blocks = current_node.get('Local Read Blocks')
+                index_access_info[index_name] = {'table':table_name, 'scan_type': scan_type, 'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}  
+                
+        # check for nodes that indicate table sequential scans
+        elif current_node.get('Node Type') in ['Seq Scan']:
+            table_name = current_node.get('Relation Name')
+            if table_name:
+                actual_rows = current_node.get('Actual Rows')
+                actual_startup_time = current_node.get('Actual Startup Time')
+                actual_total_time = current_node.get('Actual Total Time')
+                shared_hit_blocks = current_node.get('Shared Hit Blocks')
+                shared_read_blocks = current_node.get('Shared Read Blocks')
+                local_hit_blocks = current_node.get('Local Hit Blocks')
+                local_read_blocks = current_node.get('Local Read Blocks')
+                table_access_info[table_name] = {'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}
+
+
+        # Add subplans to the stack
+        nodes_to_visit.extend(current_node.get('Plans', []))
+
+    return table_access_info, index_access_info
+
+
+
 # measure sequential scan time for a table (make sure there are no secondary indexes on the table)
 def get_sequential_scan_time(conn, table_name):
     cur = conn.cursor()
@@ -623,7 +677,6 @@ def get_sequential_scan_time(conn, table_name):
 
             # Add subplans to the stack
             nodes_to_visit.extend(current_node.get('Plans', []))
-
 
         # Close the cursor
         cur.close()       
