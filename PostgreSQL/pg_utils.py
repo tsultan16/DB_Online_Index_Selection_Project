@@ -622,8 +622,8 @@ def extract_access_info(plan):
                 index_access_info[index_name] = {'table':table_name, 'scan_type': scan_type, 'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}  
 
         elif current_node.get('Node Type') in ['Bitmap Heap Scan']:
-            index_name = current_node.get('Index Name')
-            if index_name:
+            table_name = current_node.get('Relation Name')
+            if table_name:
                 scan_type = current_node.get('Node Type')
                 actual_rows = current_node.get('Actual Rows')
                 actual_startup_time = current_node.get('Actual Startup Time')
