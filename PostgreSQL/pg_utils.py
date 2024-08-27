@@ -137,7 +137,7 @@ def execute_query(conn, query_string, with_explain=True,  return_access_info=Fal
             total_execution_time = execution_plan_json[0]['Plan'].get('Actual Total Time')
 
             if return_access_info:
-                table_access_info, index_access_info = extract_access_info(execution_plan_json[0]['Plan'])
+                table_access_info, index_access_info, bitmap_heapscan_info = extract_access_info(execution_plan_json[0]['Plan'])
             
         else:        
             cur.execute(query_string)
@@ -158,7 +158,7 @@ def execute_query(conn, query_string, with_explain=True,  return_access_info=Fal
     # Close the cursor
     cur.close()
     if return_access_info:
-        return total_execution_time, rows, table_access_info, index_access_info
+        return total_execution_time, rows, table_access_info, index_access_info, bitmap_heapscan_info
 
     return total_execution_time, rows
 
