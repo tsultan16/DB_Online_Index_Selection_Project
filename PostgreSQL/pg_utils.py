@@ -600,13 +600,14 @@ def extract_access_info(plan):
     # dictionaries to store access method information
     table_access_info = {}  
     index_access_info = {}
+    bitmap_heapscan_info = {}
     nodes_to_visit = [plan]  # Initialize the stack with the root plan node
 
     while nodes_to_visit:
         current_node = nodes_to_visit.pop()
 
         # check for nodes that indicate index scans
-        if current_node.get('Node Type') in ['Index Scan', 'Index Only Scan', 'Bitmap Index Scan', 'Bitmap Heap Scan']:
+        if current_node.get('Node Type') in ['Index Scan', 'Index Only Scan', 'Bitmap Heap Scan']:
             index_name = current_node.get('Index Name')
             if index_name:
                 scan_type = current_node.get('Node Type')
@@ -619,7 +620,22 @@ def extract_access_info(plan):
                 local_hit_blocks = current_node.get('Local Hit Blocks')
                 local_read_blocks = current_node.get('Local Read Blocks')
                 index_access_info[index_name] = {'table':table_name, 'scan_type': scan_type, 'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}  
-                
+
+        elif current_node.get('Node Type') in ['Bitmap Heap Scan']:
+            index_name = current_node.get('Index Name')
+            if index_name:
+                scan_type = current_node.get('Node Type')
+                actual_rows = current_node.get('Actual Rows')
+                actual_startup_time = current_node.get('Actual Startup Time')
+                actual_total_time = current_node.get('Actual Total Time')  
+                table_name = current_node.get('Relation Name')      
+                shared_hit_blocks = current_node.get('Shared Hit Blocks')
+                shared_read_blocks = current_node.get('Shared Read Blocks')
+                local_hit_blocks = current_node.get('Local Hit Blocks')
+                local_read_blocks = current_node.get('Local Read Blocks')
+                bitmap_heapscan_info[index_name] = {'table':table_name, 'scan_type': scan_type, 'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}
+
+
         # check for nodes that indicate table sequential scans
         elif current_node.get('Node Type') in ['Seq Scan']:
             table_name = current_node.get('Relation Name')
@@ -637,7 +653,7 @@ def extract_access_info(plan):
         # Add subplans to the stack
         nodes_to_visit.extend(current_node.get('Plans', []))
 
-    return table_access_info, index_access_info
+    return table_access_info, index_access_info, bitmap_heapscan_info
 
 
 
