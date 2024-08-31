@@ -1289,6 +1289,226 @@ class WFIT:
 
 
 
+"""
+    Greedy Baseline Algorithm
+
+    In this algorithm, for every new query, we extract all cadidate indexes $C$, then use HypoPG to find the subset $S \subseteq C$ of indexes used by the query planner and materialize the indexes in $S$ which don't exist currently.  
+
+    TODO: Put limit on maximum memory for indexes => use some form of bin packing to decide which indexes to keep in the configuration => need to allow index dropping as well as creation, maybe could drop/evict least recently used (LRU) indexes to make room for new indexes.
+
+"""
+
+class HypoGreedy:
+
+    def __init__(self, config_memory_MB=2048, max_key_columns=3, include_cols=False):
+        self.currently_materialized_indexes = {}
+        self.total_whatif_calls = 0
+        self.total_whatif_time = 0
+        # memory budget for configuration
+        self.config_memory_MB = config_memory_MB
+        # maximum number of key columns in an index
+        self.max_key_columns = max_key_columns
+        # allow include columns in indexes
+        self.include_cols = include_cols
+        # track time 
+        self.recommendation_time = []
+        self.materialization_time = []
+        self.execution_time = []
+        self.total_recommendation_time = 0
+        self.total_materialization_time = 0
+        self.total_execution_time_actual = 0
+        self.total_time = 0
+        self.current_round = 0
+
+        # index size cache
+        self.index_size = {}
+
+        # index_stats_cache
+        self.index_stats = {}
+
+        print(f"*** Dropping all materialized indexes...")
+        conn = create_connection()
+        drop_all_indexes(conn)
+        close_connection(conn)
+
+
+    # create statistics entry for a new index
+    def create_index_stats(self, index_id):
+        stats = {'when_selected':[], 'when_materialized':[], 'when_used':[]}
+        self.index_stats[index_id] = stats
+
+
+    # materialize new indexes and evict old indexes if necessary 
+    def materialize_indexes(self, recommended_indexes):
+        # materialize new recommendation
+        indexes_added = [index for index in recommended_indexes if index.index_id not in self.currently_materialized_indexes]
+        # compute size of currently materialized indexes (use hypothetical sizes)
+        current_size = sum([self.index_size[index.index_id] for index in self.currently_materialized_indexes.values()])
+        print(f"Size of current configuration: {current_size} MB, Space needed for new indexes: {sum([self.index_size[index.index_id] for index in indexes_added])} MB")
+        # remove least recently used indexes to make space for new indexes if necessary
+        indexes_removed = []
+        while current_size + sum([self.index_size[index.index_id] for index in indexes_added]) > self.config_memory_MB:
+            if current_size == 0:
+                # this means the new indexes are too big to fit in the memory budget, need to pack a subset of them
+                print(f"New indexes are too big to fit in the memory budget, packing a subset of them...")
+                # sort the new indexes in descending order of size
+                indexes_added = sorted(indexes_added, key=lambda x: self.index_size[x.index_id], reverse=True)
+                # pack the indexes until the memory budget is reached
+                packed_indexes = []
+                for index in indexes_added:
+                    if current_size + self.index_size[index.index_id] <= self.config_memory_MB:
+                        packed_indexes.append(index)
+                        current_size += self.index_size[index.index_id]    
+                indexes_added = packed_indexes
+                break
+            
+            # find the least recently selected index
+            lru_index = min(self.currently_materialized_indexes.values(), key=lambda x: self.index_stats[x.index_id]['when_selected'][-1])
+            print(f"Evicting index {lru_index.index_id} to make space for new indexes")
+            # remove the index from the materialized indexes
+            indexes_removed.append(lru_index)
+            del self.currently_materialized_indexes[lru_index.index_id]
+            # update the current size
+            current_size -= self.index_size[lru_index.index_id]
+
+        for index in indexes_added:
+            self.currently_materialized_indexes[index.index_id] = index
+
+        print(f"New indexes added this round: {[index.index_id for index in indexes_added]}")
+        print(f"Old indexes removed this round: {[index.index_id for index in indexes_removed]}")
+
+        # materialize new configuration
+        conn = create_connection()
+        bulk_drop_indexes(conn, indexes_removed)
+        close_connection(conn)
+        print(f"Materializing new indexes...")
+        start_time = time.time()
+        conn = create_connection()
+        bulk_create_indexes(conn, indexes_added)
+        close_connection(conn)
+        end_time = time.time()
+        creation_time = end_time - start_time
+
+        # update index usage stats
+        for index in indexes_added:
+            self.index_stats[index.index_id]['when_materialized'].append(self.current_round)
+
+
+        print(f"Currently materialized indexes: {list(self.currently_materialized_indexes.keys())}")
+
+        return creation_time
+
+
+    # extract candidate indexes from given query
+    def extract_indexes(self, query_object):        
+        candidate_indexes = extract_query_indexes(query_object,  self.max_key_columns, self.include_cols)
+        new_indexes = [index for index in candidate_indexes if index.index_id not in self.index_size]
+        # get hypothetical idnex sizes
+        conn = create_connection()
+        new_index_sizes = get_hypothetical_index_sizes(conn, new_indexes)
+        close_connection(conn)
+        for index in new_indexes:
+            self.index_size[index.index_id] = new_index_sizes[index.index_id]
+
+        # create index stats for new indexes
+        for index in new_indexes:
+            self.create_index_stats(index.index_id)
+        # update index stats for candidate indexes
+        for index in candidate_indexes:
+            self.index_stats[index.index_id]['when_selected'].append(self.current_round)    
+
+        return candidate_indexes
+
+
+    # get hypothetical cost and used indexes for the query in the given configuration, recommend the used indexes
+    def get_recommendation(self, query_string, indexes):
+        start_time = time.time()
+        conn = create_connection()
+        # hide existing indexes
+        bulk_hide_indexes(conn, list(self.currently_materialized_indexes.values()))
+        # create hypothetical indexes
+        hypo_indexes = bulk_create_hypothetical_indexes(conn, indexes)
+        # map oid to index object
+        oid2index = {}
+        for i in range(len(hypo_indexes)):
+            oid2index[hypo_indexes[i]] = indexes[i]
+        # get cost and used indexes
+        cost, indexes_used = get_query_cost_estimate_hypo_indexes(conn, query_string, show_plan=False)
+        # map used index oids to index objects
+        used = [oid2index[oid] for oid, scan_type, scan_cost in indexes_used]
+        # drop hypothetical indexes
+        bulk_drop_hypothetical_indexes(conn)
+        # unhide existing indexes
+        bulk_unhide_indexes(conn, list(self.currently_materialized_indexes.values()))
+        close_connection(conn)
+        end_time = time.time()
+
+        # Store the result in the class-level cache
+        #self._class_cache[indexes_tuple] = (cost, used)
+        self.total_whatif_calls += 1
+        self.total_whatif_time += end_time - start_time
+
+        # remove duplicates
+        used = list({index.index_id:index for index in used}.values())
+
+        print(f"Recommended indexes: {[index.index_id for index in used]}")
+
+        return used
+    
+    # execute the query
+    def execute(self, query_object):
+        # restart the server before each query execution
+        restart_postgresql()
+        conn = create_connection()
+        execution_time, rows, table_access_info, index_access_info, bitmap_heapscan_info = execute_query(conn, query_object.query_string, with_explain=True, return_access_info=True)
+        close_connection(conn)
+
+        # update index usage stats
+        for index_id in index_access_info:
+            self.index_stats[index_id]['when_used'].append(self.current_round)    
+
+        print(f"Execution time: {execution_time/1000} s")
+        print(f"Indexes accessed --> {list(index_access_info.keys())}")
+        return execution_time
+
+
+    # process the query using greedy algorithm
+    def process_greedy(self, query_object):
+        self.current_round += 1
+        #print(f"Round# {self.n_rounds}")
+
+        start_time = time.time()
+        # extract candidate indexes
+        print("Extracting candidate indexes...")
+        candidate_indexes = self.extract_indexes(query_object)
+
+        # get index recommendation
+        print("Getting index recommendation...")
+        recommended_indexes = self.get_recommendation(query_object.query_string, candidate_indexes)
+        end_time = time.time()
+        recommendation_time = end_time - start_time
+        self.recommendation_time.append(recommendation_time)
+
+        # materialize indexes
+        print("Materializing indexes...")
+        materialization_time = self.materialize_indexes(recommended_indexes)
+        self.materialization_time.append(materialization_time)
+
+        # execute query
+        print("Executing query...")
+        execution_time = self.execute(query_object)
+        self.execution_time.append(execution_time)
+
+        self.total_recommendation_time += recommendation_time
+        self.total_materialization_time += materialization_time
+        self.total_execution_time_actual += execution_time
+        self.total_time += recommendation_time + materialization_time + (execution_time/100)
+
+        print(f"\nTotal recommendation time so far: {self.total_recommendation_time} s")
+        print(f"Total materialization time so far: {self.total_materialization_time} s")
+        print(f"Total execution time so far: {self.total_execution_time_actual/1000} s")
+        print(f"Total time spent so far: {self.total_time} s")
+        
 
 
 
