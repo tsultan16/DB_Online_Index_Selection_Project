@@ -8,7 +8,7 @@ import math
 
 # returns SSB schema as a dictionary
 def get_ssb_schema():
-    ssb_schema = {
+    tables = {
         "lineorder": [
             ("lo_orderkey", "INT"),
             ("lo_linenumber", "INT"),
@@ -78,7 +78,10 @@ def get_ssb_schema():
             ("d_weekdayfl", "BIT")
         ]
     }
-    return ssb_schema
+
+    pk_columns = {"lineorder": ["lo_orderkey", "lo_linenumber"], "part": ["p_partkey"], "supplier": ["s_suppkey"], "customer": ["c_custkey"], "dwdate": ["d_datekey"]}
+
+    return tables, pk_columns
 
 
 # class for SSB queries
@@ -98,7 +101,10 @@ class Query:
 # class for generating SSB queries
 class QGEN:
 
-    def __init__(self):
+    def __init__(self, seed=1234):
+        if seed is not None:
+            random.seed(seed)
+
         # assume table self.stats and schema available
         with open('ssb_stats.pkl', 'rb') as f:
             self.stats = pickle.load(f)
@@ -256,11 +262,19 @@ class QGEN:
             """,
             
             14: """
+                SELECT lo_linenumber, lo_quantity  
+                FROM lineorder
+                WHERE lo_linenumber >= {linenumber_low} AND lo_linenumber <= {linenumber_high}
+                AND lo_quantity = {quantity};
+            """, 
+
+            15: """
                 SELECT lo_linenumber, lo_quantity, lo_orderdate  
                 FROM lineorder
                 WHERE lo_linenumber >= {linenumber_low} AND lo_linenumber <= {linenumber_high}
                 AND lo_quantity = {quantity};
             """, 
+
             }
         
         self.predicates = {1: {"lineorder": ["lo_orderdate", "lo_discount", "lo_quantity"], "dwdate": ["d_datekey", "d_year"]},
@@ -291,7 +305,9 @@ class QGEN:
               13: {"lineorder": ["lo_custkey", "lo_suppkey", "lo_orderdate", "lo_partkey"],
                    "dwdate": ["d_year", "d_datekey"], "customer": ["c_custkey", "c_nation"],
                    "part": ["p_partkey", "p_mfgr", "p_category"], "supplier": ["s_suppkey", "s_nation"]},
-              14: {"lineorder": ["lo_linenumber", "lo_quantity"]}  
+              14: {"lineorder": ["lo_linenumber", "lo_quantity"]},  
+              
+              15: {"lineorder": ["lo_linenumber", "lo_quantity"]},  
               }
 
         self.payloads = {1: {"lineorder": ["lo_extendedprice", "lo_discount"]},
@@ -309,7 +325,9 @@ class QGEN:
                         "supplier": ["s_nation"]},
                     13: {"lineorder": ["lo_revenue", "lo_supplycost"], "dwdate": ["d_year"], "part": ["p_brand"],
                         "supplier": ["s_city"]},
-                    14: {"lineorder": ["lo_linenumber", "lo_quantity", "lo_orderdate"]},  
+                    14: {"lineorder": ["lo_linenumber", "lo_quantity"]},  
+                    
+                    15: {"lineorder": ["lo_linenumber", "lo_quantity", "lo_orderdate"]},  
                     }
 
         self.order_bys = {1: {},
@@ -325,7 +343,8 @@ class QGEN:
                     11: {"dwdate": ["d_year"], "customer": ["c_nation"]},
                     12: {"dwdate": ["d_year"], "part": ["p_category"], "supplier": ["s_nation"]},
                     13: {"dwdate": ["d_year"], "part": ["p_brand"], "supplier": ["s_city"]},
-                    14: {}
+                    14: {},
+                    15: {},
                     }
 
         self.group_bys = {1: {},
@@ -341,7 +360,8 @@ class QGEN:
                     11: {"customer": ["c_nation"], "dwdate": ["d_year"]},
                     12: {"part": ["p_category"], "supplier": ["s_nation"], "dwdate": ["d_year"]},
                     13: {"part": ["p_brand"], "supplier": ["s_city"], "dwdate": ["d_year"]},
-                    14: {}
+                    14: {},
+                    15: {},
         }
 
 
@@ -373,8 +393,8 @@ class QGEN:
             yearmonthnum = random.choice(list(yearmonthnum_stats['histogram'].keys()))
             discount_low = math.floor(random.uniform(float(discount_stats['min']), float(discount_stats['max'])-2))
             discount_high = discount_low + 2
-            quantity_low = random.randint(quantity_stats['min'], quantity_stats['max'] // 2)
-            quantity_high = random.randint(quantity_stats['max'] // 2, quantity_stats['max'])
+            quantity_low = random.randint(quantity_stats['min'], quantity_stats['max']-9)
+            quantity_high = quantity_low + 9
 
             query = template.format(yearmonthnum=yearmonthnum, discount_low=discount_low, discount_high=discount_high, quantity_low=quantity_low, quantity_high=quantity_high)
 
@@ -388,8 +408,8 @@ class QGEN:
             year = random.choice(list(year_stats['histogram'].keys()))
             discount_low = math.floor(random.uniform(float(discount_stats['min']), float(discount_stats['max'])-2))
             discount_high = discount_low + 2
-            quantity_low = random.randint(quantity_stats['min'], quantity_stats['max'] // 2)
-            quantity_high = random.randint(quantity_stats['max'] // 2, quantity_stats['max'])
+            quantity_low = random.randint(quantity_stats['min'], quantity_stats['max']-9)
+            quantity_high = quantity_low + 9
 
             query = template.format(weeknuminyear=weeknuminyear, year=year, discount_low=discount_low, discount_high=discount_high, quantity_low=quantity_low, quantity_high=quantity_high)
 
@@ -407,10 +427,16 @@ class QGEN:
             sregion_stats = self.stats['supplier']['s_region']
 
             brand1_values = list(brand1_stats['histogram'].keys())
-            brand1_low = random.choice(brand1_values)
-            brand1_high = random.choice([b for b in brand1_values if b >= brand1_low])
-            sregion = random.choice(list(sregion_stats['histogram'].keys()))
+            #brand1_low = random.choice(brand1_values)
+            #brand1_high = random.choice([b for b in brand1_values if b >= brand1_low])
+            min_value = min(int(value.split('#')[-1]) for value in brand1_values)
+            max_value = max(int(value.split('#')[-1]) for value in brand1_values)
+            brand1_low_num = random.choice([i for i in range(min_value, max_value-7+1)])
+            brand1_low = 'MFGR#' + str(brand1_low_num)
+            brand1_high_num = brand1_low_num + 7
+            brand1_high = 'MFGR#' + str(brand1_high_num)
 
+            sregion = random.choice(list(sregion_stats['histogram'].keys()))
             query = template.format(brand1_low=brand1_low, brand1_high=brand1_high, sregion=sregion)
 
         elif template_num == 6:
@@ -427,8 +453,8 @@ class QGEN:
             year_stats = self.stats['dwdate']['d_year']
 
             region = random.choice(list(region_stats['histogram'].keys()))
-            year_low = random.choice(list(year_stats['histogram'].keys()))
-            year_high = random.choice([y for y in year_stats['histogram'].keys() if y >= year_low])
+            year_low = random.randint(year_stats['min'], year_stats['max']-5)
+            year_high = year_low + 5
 
             query = template.format(region=region, year_low=year_low, year_high=year_high)
 
@@ -437,8 +463,8 @@ class QGEN:
             year_stats = self.stats['dwdate']['d_year']
 
             region = random.choice(list(region_stats['histogram'].keys()))
-            year_low = random.choice(list(year_stats['histogram'].keys()))
-            year_high = random.choice([y for y in year_stats['histogram'].keys() if y >= year_low])
+            year_low = random.randint(year_stats['min'], year_stats['max']-5)
+            year_high = year_low + 5
 
             query = template.format(region=region, year_low=year_low, year_high=year_high)
 
@@ -448,8 +474,8 @@ class QGEN:
 
             city_1 = random.choice(list(city_stats['histogram'].keys()))
             city_2 = random.choice([c for c in city_stats['histogram'].keys() if c != city_1])
-            year_low = random.choice(list(year_stats['histogram'].keys()))
-            year_high = random.choice([y for y in year_stats['histogram'].keys() if y >= year_low])
+            year_low = random.randint(year_stats['min'], year_stats['max']-5)
+            year_high = year_low + 5
 
             query = template.format(city_1=city_1, city_2=city_2, year_low=year_low, year_high=year_high)
 
@@ -468,10 +494,15 @@ class QGEN:
             mfgr_stats = self.stats['part']['p_mfgr']
 
             region = random.choice(list(region_stats['histogram'].keys()))
-            mfgr_1 = random.choice(list(mfgr_stats['histogram'].keys()))
-            mfgr_2 = random.choice([m for m in mfgr_stats['histogram'].keys() if m != mfgr_1])
+            mfgr_values = list(mfgr_stats['histogram'].keys())
+            min_value = min(int(value.split('#')[-1]) for value in mfgr_values)
+            max_value = max(int(value.split('#')[-1]) for value in mfgr_values)
+            mfgr_1_low_num = random.choice([i for i in range(min_value, max_value)])
+            mfgr_1_low = 'MFGR#' + str(mfgr_1_low_num)
+            mfgr_1_high_num = min(mfgr_1_low_num + random.randint(1, 3), max_value)
+            mfgr_1_high = 'MFGR#' + str(mfgr_1_high_num)
 
-            query = template.format(region=region, mfgr_1=mfgr_1, mfgr_2=mfgr_2)
+            query = template.format(region=region, mfgr_1=mfgr_1_low, mfgr_2=mfgr_1_high)
 
         elif template_num == 12:
             region_stats = self.stats['customer']['c_region']
@@ -479,12 +510,17 @@ class QGEN:
             mfgr_stats = self.stats['part']['p_mfgr']
 
             region = random.choice(list(region_stats['histogram'].keys()))
-            year_1 = random.choice(list(year_stats['histogram'].keys()))
-            year_2 = random.choice([y for y in year_stats['histogram'].keys() if y != year_1])
-            mfgr_1 = random.choice(list(mfgr_stats['histogram'].keys()))
-            mfgr_2 = random.choice([m for m in mfgr_stats['histogram'].keys() if m != mfgr_1])
+            year_low = random.randint(year_stats['min'], year_stats['max']-1)
+            year_high = min(year_low + random.randint(1, 3), year_stats['max'])        
+            mfgr_values = list(mfgr_stats['histogram'].keys())
+            min_value = min(int(value.split('#')[-1]) for value in mfgr_values)
+            max_value = max(int(value.split('#')[-1]) for value in mfgr_values)
+            mfgr_1_low_num = random.choice([i for i in range(min_value, max_value)])
+            mfgr_1_low = 'MFGR#' + str(mfgr_1_low_num)
+            mfgr_1_high_num = min(mfgr_1_low_num + random.randint(1, 3), max_value)
+            mfgr_1_high = 'MFGR#' + str(mfgr_1_high_num)
 
-            query = template.format(region=region, year_1=year_1, year_2=year_2, mfgr_1=mfgr_1, mfgr_2=mfgr_2)
+            query = template.format(region=region, year_1=year_low, year_2=year_high, mfgr_1=mfgr_1_low, mfgr_2=mfgr_1_high)
 
         elif template_num == 13:
             region_stats = self.stats['customer']['c_region']
@@ -494,12 +530,12 @@ class QGEN:
 
             region = random.choice(list(region_stats['histogram'].keys()))
             nation = random.choice(list(nation_stats['histogram'].keys()))
-            year_1 = random.choice(list(year_stats['histogram'].keys()))
-            year_2 = random.choice([y for y in year_stats['histogram'].keys() if y != year_1])
+            year_low = random.randint(year_stats['min'], year_stats['max']-1)
+            year_high = min(year_low + random.randint(1, 3), year_stats['max'])   
             category = random.choice(list(category_stats['histogram'].keys()))
 
-            query = template.format(region=region, nation=nation, year_1=year_1, year_2=year_2, category=category)
-
+            query = template.format(region=region, nation=nation, year_1=year_low, year_2=year_high, category=category)
+        
         elif template_num == 14:
             linenumber_stats = self.stats['lineorder']['lo_linenumber']
             quantity_stats = self.stats['lineorder']['lo_quantity']
@@ -510,6 +546,15 @@ class QGEN:
 
             query = template.format(linenumber_low=linenumber_low, linenumber_high=linenumber_high, quantity=quantity)
 
+        elif template_num == 15:
+            linenumber_stats = self.stats['lineorder']['lo_linenumber']
+            quantity_stats = self.stats['lineorder']['lo_quantity']
+
+            linenumber_low = random.randint(linenumber_stats['min'], linenumber_stats['max']-2)
+            linenumber_high = linenumber_low + 1
+            quantity = random.randint(quantity_stats['min'], quantity_stats['max'])
+
+            query = template.format(linenumber_low=linenumber_low, linenumber_high=linenumber_high, quantity=quantity) 
 
         # create Query object
         query = Query(template_num, query, self.payloads[template_num], self.predicates[template_num], self.order_bys[template_num], self.group_bys[template_num])
