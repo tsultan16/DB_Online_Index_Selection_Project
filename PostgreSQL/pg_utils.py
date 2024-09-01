@@ -6,7 +6,36 @@ import psycopg2
 import json
 import itertools
 import time
+import subprocess
 
+
+
+# restart the PostgreSQL server (source installation)
+def restart_postgresql():
+    try:
+        # Replace '/usr/lib/postgresql/14/bin/pg_ctl' with the path to pg_ctl 
+        # Replace '/var/lib/postgresql/14/main' with the path to data directory
+        subprocess.run([
+            '/home/tanzid/Code/Postgres/postgres/build/bin/pg_ctl', 
+            'stop', 
+            '-D', '/home/tanzid/Code/Postgres/postgres/data/primary'
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        #print("PostgreSQL stopped successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred while stopping PostgreSQL: {e}")
+
+
+    try:
+        subprocess.run([
+            '/home/tanzid/Code/Postgres/postgres/build/bin/pg_ctl', 
+            'start', 
+            '-D', '/home/tanzid/Code/Postgres/postgres/data/primary'
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        #print("PostgreSQL started successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred while starting PostgreSQL: {e}")
+
+    print("PostgreSQL restarted successfully.")
 
 # create connection to postgres DB
 def create_connection():
@@ -122,7 +151,7 @@ def get_all_table_sizes(conn):
 
 
 # execute a query on postgres DB
-def execute_query(conn, query_string, with_explain=True,  return_access_info=False, print_results=False):
+def execute_query(conn, query_string, with_explain=True,  return_access_info=False, print_results=False):    
     # Create a cursor object
     cur = conn.cursor()
     try:
@@ -484,7 +513,6 @@ def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False):
                 if '<' in index_name:
                     index_oid = int(index_name.split('<')[1].split('>')[0])
                     indexes_used.append((index_oid, scan_type, scan_cost)) 
-                
 
         else:
             print("No index scans were explicitly noted in the query plan.")
@@ -549,7 +577,10 @@ def hide_index(conn, index_oid):
 
 def bulk_hide_indexes(conn, index_objects):
     for index in index_objects:
-        hide_index(conn, index.current_oid)
+        if index.current_oid is not None:
+            hide_index(conn, index.current_oid)
+        else:
+            print(f"Index '{index.index_id}' has no OID (not materialized yet). Skipping...")
 
 
 # Unhides a previously hidden index using HypoPG.
@@ -570,7 +601,10 @@ def unhide_index(conn, index_oid):
 
 def bulk_unhide_indexes(conn, index_objects):
     for index in index_objects:
-        unhide_index(conn, index.current_oid)        
+        if index.current_oid is not None:
+            unhide_index(conn, index.current_oid)        
+        else:
+            print(f"Index '{index.index_id}' has no OID (not materialized yet). Skipping...")
 
 
 # find index scans in the query plan
@@ -739,12 +773,11 @@ def get_index_id(index_cols, table_name, include_cols=()):
 
 # enumerate candidate indexes that could benefit a given query
 # TODO: option for max number of index key/include columns 
+# TODO: option for including group_by/order_by columns (since some queries may benefit from having sorted data inside indexes and avoid sorting)
 def extract_query_indexes(query_object, max_key_columns=None, include_cols=False):
     # use only the predicates and payloads for now
     predicates = query_object.predicates
     payload = query_object.payload
-    #order_by = query_object.order_by
-    #group_by = query_object.group_by
 
     candidate_indexes = {}
     for table in predicates:
