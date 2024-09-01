@@ -810,6 +810,8 @@ class WFIT:
                 
 
     # repartition the stable partitions based on the new partitions
+    # TODO: Maybe check how much the new partitions differ from the old ones before repartitioning, need to define a metric for this
+    # e.g. could maybe count what fraction of the old partitions are still present in the new partitions...
     def repartition(self, new_partitions, verbose):
         # all indexes recommmendations across the WFA instances from previous round
         S_curr = set(chain(*self.current_recommendations.values()))
@@ -821,6 +823,7 @@ class WFIT:
         W = {}
         recommendations = {}
         for i, P in enumerate(new_partitions):
+            P_minus_C = [index for index in P if index not in C]
             partition_all_configs = [tuple(sorted(state, key=lambda x: x.index_id)) for state in powerset(P)]
             wf = {}
             # initialize work function values for each state
@@ -828,15 +831,20 @@ class WFIT:
             for X in partition_all_configs:
                 wf_x = 0
                 for j, wf_prev in self.W.items(): 
-                    wf_x += wf_prev[tuple(sorted(set(X) & set(self.stable_partitions[j]), key=lambda x: x.index_id))]
-                     
-                transition_cost_term = self.compute_transition_cost(S_0 & (set(P) - C), set(X) & (set(P) - C))
+                    X_intersection_Cj = [index for index in X if index in self.stable_partitions[j]] # set(X) & set(self.stable_partitions[j])
+                    wf_x += wf_prev[tuple(X_intersection_Cj)]
+
+
+                S_0_1 = [index for index in S_0 if index in P_minus_C] # S_0 & (set(P) - C)
+                X_1 = [index for index in X if index in P_minus_C] # set(X) & (set(P) - C)
+                transition_cost_term = self.compute_transition_cost(S_0_1, X_1)
                 wf[X] = wf_x + transition_cost_term #- self.total_no_index_cost
                 #if verbose: print(f"\t\t w[{tuple([index.index_id for index in X])}] --> {wf[X]}   ({wf_x} + {transition_cost_term} - {self.total_no_index_cost})")
             
             W[i] = wf
             # initialize current state/recommended configuration of the WFA instance
-            recommendations[i] = list(set(P) & S_curr)
+            P_intersect_S_curr = [index for index in P if index in S_curr] # list(set(P) & S_curr)
+            recommendations[i] = P_intersect_S_curr
             #if verbose: print(f"\tRecommendation for partition # {i}: {[index.index_id for index in recommendations[i]]}")
 
         # replace current stable partitions, WFA instances and recommendations with the new ones
@@ -1204,6 +1212,10 @@ class WFIT:
                     matched = True
                     break
             partition_match.append(matched)
+        # count how many partitions are different
+        num_diff = len([match for match in partition_match if not match])
+        print(f"Fraction of new partitions that don't match old partitions: {num_diff}/{len(partition_match)}")
+        
         need_to_repartition = not all(partition_match)                   
 
         return bestSolution, need_to_repartition
