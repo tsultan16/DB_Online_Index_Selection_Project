@@ -547,7 +547,7 @@ def process_node_chunk(args):
 
 class WFIT:
 
-    def __init__(self, S_0=[], max_key_columns=None, include_cols=False, max_U=30, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, idxCnt=25, stateCnt=500, histSize=100, rand_cnt=100, execution_cost_scaling=1e-6, creation_cost_fudge_factor=2048):
+    def __init__(self, S_0=[], max_key_columns=None, include_cols=False, max_indexes_per_table=3, max_U=30, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, idxCnt=25, stateCnt=500, histSize=1000, rand_cnt=100, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1):
         # initial set of materialzed indexes
         self.S_0 = S_0
         # maximum number of key columns in an index
@@ -590,6 +590,8 @@ class WFIT:
         # keep track of candidate index sizes
         self.index_size = {}
         self.n_pos = 0
+        # index usage stats
+        self.index_usage = defaultdict(int)
 
         print(f"##################################################################")
         # initialize work function instance for each stable partition
@@ -630,8 +632,8 @@ class WFIT:
         self.total_cost_simple = 0
         self.total_no_index_cost = 0
 
-        # constants
-        self.MAX_INDEXES_PER_TABLE = 3
+        # max number of indexes per table allowed in top-k indexes
+        self.MAX_INDEXES_PER_TABLE = max_indexes_per_table
 
 
     # initialize a WFA instance for each stable partition
@@ -657,7 +659,7 @@ class WFIT:
  
         # get estimated no index cost for the query
         conn = create_connection()
-        self.total_no_index_cost += hypo_query_cost(conn, query_object, [], currently_materialized_indexes=list(self.M.values())) * self.execution_cost_scaling
+        self.total_no_index_cost += (hypo_query_cost(conn, query_object, [], currently_materialized_indexes=list(self.M.values())) * self.execution_cost_scaling)
         close_connection(conn)
 
         # generate new partitions 
@@ -686,7 +688,7 @@ class WFIT:
             config_materialization_time = 0
 
         if verbose: 
-            print(f"{len(self.M)} currently materialized indexes: {[index.index_id for index in self.M.values()]}") 
+            print(f"\n{len(self.M)} currently materialized indexes: {[index.index_id for index in self.M.values()]}\n") 
 
         # execute the query with the new configuration
         if execute:
@@ -698,6 +700,9 @@ class WFIT:
             close_connection(conn)
             execution_time /= 1000
             print(f"Indexes accessed --> {list(index_access_info.keys())}")
+            # update index usage stats
+            for index_id in index_access_info:
+                self.index_usage[index_id] += 1
         else:
             execution_time = 0
 
@@ -739,12 +744,16 @@ class WFIT:
         print(f"\nRecommendation time for query #{self.n_pos}: {end_time_3 - start_time_1} seconds")
         print(f"Index materialization time for query #{self.n_pos}: {config_materialization_time} seconds")
         print(f"Execution time for query #{self.n_pos} --> {execution_time} seconds")
-        print(f"(Partitioning: {end_time_1 - start_time_1} seconds, Repartitioning: {end_time_2 - start_time_2} seconds, Analyzing: {end_time_3 - start_time_3} seconds), Materializing config: {config_materialization_time} seconds, Executing query: {execution_time} seconds")
+        print(f"\n(Partitioning: {end_time_1 - start_time_1} seconds, Repartitioning: {end_time_2 - start_time_2} seconds, Analyzing: {end_time_3 - start_time_3} seconds), Materializing config: {config_materialization_time} seconds, Executing query: {execution_time} seconds")
         
         print(f"\nTotal recommendation time so far --> {self.total_recommendation_time} seconds")
         print(f"Total materialization time so far --> {self.total_materialization_time} seconds")
         print(f"Total execution time so far --> {self.total_execution_time_actual} seconds")
         print(f"Total time so far --> {self.total_time_actual} seconds")
+
+        print(f"\nIndex usage stats:")
+        for index_id in self.index_usage:
+            print(f"\tIndex {index_id}: {self.index_usage[index_id]}")
 
 
     # Simple baseline recommendation: just the used indexes in the IBG root node, i.e. these are the indexes from 
@@ -752,8 +761,8 @@ class WFIT:
     def get_simple_recommendation_ibg(self, ibg):
         simple_recommendation = ibg.root.used  
         wfit_recommendation = [index.index_id for i in self.current_recommendations for index in self.current_recommendations[i]]
-        print(f"*** WFIT recommendation: {sorted(wfit_recommendation)}")
-        print(f"*** Simple recommendation: {sorted([index.index_id for index in simple_recommendation])}") 
+        #print(f"*** WFIT recommendation: {sorted(wfit_recommendation)}")
+        print(f"\n*** Simple recommendation: {sorted([index.index_id for index in simple_recommendation])}\n") 
 
 
     # check for stale indexes in U and remove them
@@ -822,7 +831,7 @@ class WFIT:
                     wf_x += wf_prev[tuple(sorted(set(X) & set(self.stable_partitions[j]), key=lambda x: x.index_id))]
                      
                 transition_cost_term = self.compute_transition_cost(S_0 & (set(P) - C), set(X) & (set(P) - C))
-                wf[X] = wf_x + transition_cost_term - self.total_no_index_cost
+                wf[X] = wf_x + transition_cost_term #- self.total_no_index_cost
                 #if verbose: print(f"\t\t w[{tuple([index.index_id for index in X])}] --> {wf[X]}   ({wf_x} + {transition_cost_term} - {self.total_no_index_cost})")
             
             W[i] = wf
@@ -885,8 +894,8 @@ class WFIT:
     def materialize_configuration(self, all_indexes_added, all_indexes_removed, verbose):
         # materialize new configuration
         if verbose: 
-            print(f"New indexes added this round: {[index.index_id for index in all_indexes_added]}")
-            print(f"Old indexes removed this round: {[index.index_id for index in all_indexes_removed]}")
+            print(f"\nNew indexes added this round: {[index.index_id for index in all_indexes_added]}")
+            print(f"Old indexes removed this round: {[index.index_id for index in all_indexes_removed]}\n")
 
             print(f"Materializing new configuration...")
         start_time = time.time()
@@ -944,27 +953,41 @@ class WFIT:
 
         # find all states with the best score and are also in their own p set
         S_best = []
+        S_best_backup = []
         for Y in wf_new:
-            if scores[Y] == best_score and Y in p[Y]:
-                S_best.append(Y)
+            if scores[Y] == best_score:
+                S_best_backup.append(Y)
+                if Y in p[Y]:
+                    S_best.append(Y)
 
         if S_best == []:
-            raise ValueError("No best state found. There's probably a bug in the WFA update. Aborting WFIT...")
-        
-        # pick one of the best states uniformly at random
-        best_state = random.choice(S_best)        
+            #raise ValueError("No best state found. There's probably a bug in the WFA update. Aborting WFIT...")
+            print(f"Warning: No best state found. There's probably a bug in the WFA update.")
+            
+            ##
+            ## Band-aid fix: pick the state with the lowest work function value, need to find better solution
+            ##
+            #if () in S_best_backup:
+            #    best_state = ()
+            #else:
+            #    best_state = min(S_best_backup, key=lambda x: wf_new[x])    
+            best_state = ()
+
+        else:
+            # pick one of the best states uniformly at random
+            best_state = random.choice(S_best)        
 
         if verbose:
             #print(f"\tAll updated Work function values for WFA instance:")
             #for Y, value in wf_new.items():
             #    print(f"\t\tstate :{tuple([index.index_id for index in Y])} , w_value: {value}, score: {scores[Y]}, p: {[[index.index_id for index in indexes] for indexes in p[Y]]}, state in p: {Y in p[Y]}") 
 
-            print(f"\tBest states: ")
-            for Y in S_best:
-                print(f"\t\t{tuple([index.index_id for index in Y])} --> in p[best_state]: {Y in p[Y]}")
+            #print(f"\tBest states: ")
+            #for Y in S_best:
+            #    print(f"\t\t{tuple([index.index_id for index in Y])} --> in p[best_state]: {Y in p[Y]}")
         
-            print(f"\tSelected best state: {tuple([index.index_id for index in best_state])}")
-            print(f"\tBest score: {best_score}, p[best_state]: {[[index.index_id for index in indexes] for indexes in p[best_state]]}")
+            print(f"\tBest score: {best_score}, Selected best state: {tuple([index.index_id for index in best_state])}")
+            #print(f"\tBest score: {best_score}, p[best_state]: {[[index.index_id for index in indexes] for indexes in p[best_state]]}")
             
         return wf_new, best_state
 
@@ -1173,9 +1196,15 @@ class WFIT:
                 bestLoss = loss
 
         # check if old partitions are different from new partitions
-        need_to_repartition = False
-        if bestSolution != self.stable_partitions:
-            need_to_repartition = True
+        partition_match = []
+        for partition in bestSolution:
+            matched = False
+            for stable_partition in self.stable_partitions:
+                if sorted([index.index_id for index in partition]) == sorted([index.index_id for index in stable_partition]):
+                    matched = True
+                    break
+            partition_match.append(matched)
+        need_to_repartition = not all(partition_match)                   
 
         return bestSolution, need_to_repartition
 
@@ -1217,8 +1246,8 @@ class WFIT:
 
     # choose top num_indexes indexes from X with highest potential benefit
     def top_indexes(self, N_workload, X, num_indexes, verbose):
-        if verbose:
-            print(f"Non-materialized candidate indexes, X = {[index.index_id for index in X]}")
+        #if verbose:
+        #    print(f"Non-materialized candidate indexes, X = {[index.index_id for index in X]}")
 
         # compute "current benefit" of each index in X (these are derived from statistics of observed benefits from recent queries)
         score = {}
@@ -1245,14 +1274,40 @@ class WFIT:
                 creation_cost_term = - self.get_index_creation_cost(index)
 
             score[index.index_id] = current_benefit + creation_cost_term
-            if verbose: print(f"\tIndex {index.index_id}: current benefit: {current_benefit}, creation penalty: {creation_cost_term}, score: {score[index.index_id]}")
+            #if verbose: print(f"\tIndex {index.index_id}: current benefit: {current_benefit}, creation penalty: {creation_cost_term}, score: {score[index.index_id]}")
 
         top_indexes = [index_id for index_id, s in score.items()]  
-        #top_indexes = sorted(top_indexes, key=lambda x: score[x], reverse=True)#[:num_indexes]
-        top_indexes = sorted(top_indexes, key=lambda x: score[x], reverse=True)[:num_indexes]
+        #top_indexes = sorted(top_indexes, key=lambda x: score[x], reverse=True)[:num_indexes]
+        top_indexes = sorted(top_indexes, key=lambda x: score[x], reverse=True)
         top_indexes = {index_id: self.U[index_id] for index_id in top_indexes}
 
-          
+
+        ########################################################################################################################
+
+        # make separate lists of sorted indexes for each table
+        top_indexes_table = defaultdict(list)
+        for index in top_indexes.values():
+            top_indexes_table[index.table_name].append(index)
+            
+        for table in top_indexes_table:
+            top_indexes_table[table] = sorted(top_indexes_table[table], key=lambda x: score[x.index_id], reverse=True)
+        
+        # get materialized indexes by table
+        materialized_indexes_table = defaultdict(list)
+        for index in self.M.values():
+            materialized_indexes_table[index.table_name].append(index)
+
+        # keep top indexes for each table, at most MAX_INDEXES_PER_TABLE top indexes and already materialized indexes combined per table
+        top_indexes_keep = defaultdict(list)
+        for table in top_indexes_table:
+            num_keep = self.MAX_INDEXES_PER_TABLE - len(materialized_indexes_table[table])
+            top_indexes_keep[table] = top_indexes_table[table][:num_keep]
+
+        top_indexes = {index.index_id: index for indexes in top_indexes_keep.values() for index in indexes}        
+
+        ########################################################################################################################
+
+        """ 
         # for each table, keep at most MAX_INDEXES_PER_TABLE indexes
         table_indexes = defaultdict(list)
         for index in top_indexes.values():
@@ -1263,9 +1318,12 @@ class WFIT:
         top_indexes = {index.index_id: index for indexes in table_indexes.values() for index in indexes}
         
         # if there are more than num_indexes indexe in top_indexes, then shave off the excess indexes
-        #if len(top_indexes) > num_indexes:
-        #    top_indexes = {index.index_id: index for index in top_indexes[:num_indexes]}    
-
+        if len(top_indexes) > num_indexes:
+            top_indexes = list(top_indexes.values())
+            random.shuffle(top_indexes)
+            top_indexes = {index.index_id: index for index in top_indexes[:num_indexes]}    
+        """
+        
         # if there are less than num_indexes indexes in top_indexes, then add indexes from the sorted top_indexes list to make up the difference
         #if len(top_indexes) < num_indexes:
         #    for index in sorted(score, key=lambda x: score[x], reverse=True):
@@ -1273,6 +1331,7 @@ class WFIT:
         #            top_indexes[index] = self.U[index]
         #        if len(top_indexes) == num_indexes:
         #            break    
+        
 
         if verbose:
             print(f"{len(top_indexes)} Top index scores:")
@@ -1523,6 +1582,38 @@ class HypoGreedy:
         print(f"Total execution time so far: {self.total_execution_time_actual/1000} s")
         print(f"Total time spent so far: {self.total_time} s")
         
+
+""" 
+    No Index Baseline
+"""
+
+def execute_workload_noIndex(workload, drop_indexes=False):
+    if drop_indexes:
+        print(f"*** Dropping all existing indexes...")
+        # drop all existing indexes
+        conn = create_connection()
+        drop_all_indexes(conn)
+        close_connection(conn)
+
+    print(f"Executing workload without any indexes...")
+    # execute workload without any indexes
+    total_time = 0
+    for i, query_object in enumerate(workload):
+        # restart the server before each query execution
+        restart_postgresql()
+        conn = create_connection()
+        execution_time, rows = execute_query(conn, query_object.query_string, with_explain=True, print_results=False)
+        close_connection(conn)
+        execution_time /= 1000
+        total_time += execution_time
+        print(f"\tExecution time for query# {i+1}: {execution_time} s, Total time so far: {total_time} s")
+
+    print(f"Total execution time for workload without any indexes: {total_time} seconds")
+    
+    return total_time    
+
+
+
 
 
 
