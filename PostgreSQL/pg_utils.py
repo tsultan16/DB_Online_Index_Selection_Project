@@ -183,6 +183,9 @@ def execute_query(conn, query_string, with_explain=True,  return_access_info=Fal
         print(f"An error occurred while executing query: {e}")
         rows = None
         total_execution_time = None
+        table_access_info = None
+        index_access_info = None
+        bitmap_heapscan_info = None
 
     # Close the cursor
     cur.close()
