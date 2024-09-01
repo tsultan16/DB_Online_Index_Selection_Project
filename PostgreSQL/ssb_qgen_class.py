@@ -116,7 +116,7 @@ class QGEN:
                 WHERE lo_orderdate = d_datekey
                 AND d_year = {year}
                 AND lo_discount BETWEEN {discount_low} AND {discount_high} 
-                AND lo_quantity < {quantity};
+                AND lo_quantity {inequality} {quantity};
             """,
             2: """
                 SELECT SUM(lo_extendedprice * lo_discount) AS revenue
@@ -381,9 +381,10 @@ class QGEN:
             year = random.choice(list(year_stats['histogram'].keys()))
             discount_low = math.floor(random.uniform(float(discount_stats['min']), float(discount_stats['max'])-2))
             discount_high = discount_low + 2
-            quantity = random.randint(quantity_stats['min'], quantity_stats['max'])
+            quantity = 25 #random.randint(quantity_stats['min'], quantity_stats['max'])
+            inequality_op = random.choice(['<', '>'])
 
-            query = template.format(year=year, discount_low=discount_low, discount_high=discount_high, quantity=quantity)
+            query = template.format(year=year, discount_low=discount_low, discount_high=discount_high, inequality=inequality_op, quantity=quantity)
 
         elif template_num == 2:
             yearmonthnum_stats = self.stats['dwdate']['d_yearmonthnum']
