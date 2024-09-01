@@ -590,6 +590,7 @@ class WFIT:
         # keep track of candidate index sizes
         self.index_size = {}
         self.n_pos = 0
+        self.n_round = 0
         # index usage stats
         self.index_usage = defaultdict(int)
 
@@ -652,8 +653,72 @@ class WFIT:
         return W
 
 
+
+    # update WFIT over next batch of queries (i.e. mini workload)
+    def process_WFIT_batch(self, query_objects, verbose=False):
+        self.n_round += 1
+        previous_config = list(self.M.values())
+        # process each query in the workload 
+        if verbose: print(f"Processing batch of queries...\n")
+        start_time = time.time()
+        for query_object in query_objects:
+            self.process_WFIT(query_object, execute=False, materialize=False, verbose=verbose, update_time=False)
+        end_time = time.time()
+        recommendation_time = end_time - start_time
+        if verbose: print(f"Recommendation time for batch of queries: {recommendation_time} s")
+
+        # find out which indexes are added and removed at the end of the batch
+        all_indexes_added = []
+        all_indexes_removed = []
+        for index in self.M.values():
+            if index not in previous_config:
+                all_indexes_added.append(index)
+        for index in previous_config:
+            if index not in self.M.values():
+                all_indexes_removed.append(index)
+
+        # materialize new configuration
+        config_materialization_time = self.materialize_configuration(all_indexes_added, all_indexes_removed, verbose)
+        if verbose: 
+            print(f"\tConfiguration materialization time: {config_materialization_time} s\n")
+            print(f"{len(self.M)} currently materialized indexes: {[index.index_id for index in self.M.values()]}\n")
+
+        # execute the batch of queries with the new configuration
+        batch_execution_time = 0
+        for i, query_object in enumerate(query_objects):
+            # restart the server before each query execution
+            restart_postgresql()
+            if verbose: print(f"Executing query ({i+1}/{len(query_objects)})...")
+            conn = create_connection()
+            execution_time, rows, table_access_info, index_access_info, bitmap_heapscan_info = execute_query(conn, query_object.query_string, with_explain=True, return_access_info=True)
+            close_connection(conn)
+            execution_time /= 1000
+            batch_execution_time += execution_time
+            self.execution_time.append(execution_time)
+            if verbose: print(f"\tExecution_time: {execution_time} s, Indexes accessed: {list(index_access_info.keys())}\n")
+            # update index usage stats
+            for index_id in index_access_info:
+                self.index_usage[index_id] += 1
+
+        self.total_recommendation_time += recommendation_time
+        self.total_materialization_time += config_materialization_time
+        self.total_execution_time_actual += batch_execution_time
+        self.total_time_actual += recommendation_time + config_materialization_time + batch_execution_time
+        self.recommendation_time.append(recommendation_time)
+        self.materialization_time.append(config_materialization_time)
+
+        print(f"\nTotal recommendation time so far --> {self.total_recommendation_time} seconds")
+        print(f"Total materialization time so far --> {self.total_materialization_time} seconds")
+        print(f"Total execution time so far --> {self.total_execution_time_actual} seconds")
+        print(f"Total time so far --> {self.total_time_actual} seconds") 
+        print(f"\nIndex usage stats:")
+        for index_id in self.index_usage:
+            print(f"\tIndex {index_id}: {self.index_usage[index_id]}")
+
+            
+
     # update WFIT step for next query in workload (this is the MAIN INTERFACE for generating an index configuration recommendation)
-    def process_WFIT(self, query_object, remove_stale_U=False, remove_stale_freq=1, execute=True, materialize=True, verbose=False):
+    def process_WFIT(self, query_object, remove_stale_U=False, remove_stale_freq=1, execute=True, materialize=True, verbose=False, update_time=True):
         self.n_pos += 1        
         previous_config = list(self.M.values())
  
@@ -684,11 +749,10 @@ class WFIT:
         # materialize new indexes
         if materialize:
             config_materialization_time = self.materialize_configuration(all_indexes_added, all_indexes_removed, verbose)
+            if verbose: 
+                print(f"\n{len(self.M)} currently materialized indexes: {[index.index_id for index in self.M.values()]}\n") 
         else:
             config_materialization_time = 0
-
-        if verbose: 
-            print(f"\n{len(self.M)} currently materialized indexes: {[index.index_id for index in self.M.values()]}\n") 
 
         # execute the query with the new configuration
         if execute:
@@ -706,13 +770,14 @@ class WFIT:
         else:
             execution_time = 0
 
-        self.total_recommendation_time += end_time_3 - start_time_1     
-        self.total_materialization_time += config_materialization_time
-        self.total_execution_time_actual += execution_time
-        self.total_time_actual += (end_time_3 - start_time_1) + config_materialization_time + execution_time   
-        self.recommendation_time.append(end_time_3 - start_time_1)
-        self.materialization_time.append(config_materialization_time)
-        self.execution_time.append(execution_time)
+        if update_time:
+            self.total_recommendation_time += end_time_3 - start_time_1     
+            self.total_materialization_time += config_materialization_time
+            self.total_execution_time_actual += execution_time
+            self.total_time_actual += (end_time_3 - start_time_1) + config_materialization_time + execution_time   
+            self.recommendation_time.append(end_time_3 - start_time_1)
+            self.materialization_time.append(config_materialization_time)
+            self.execution_time.append(execution_time)
         
         # remove stale indexes from U
         if remove_stale_U and (self.n_pos % remove_stale_freq == 0):
@@ -741,19 +806,21 @@ class WFIT:
         print(f"*** Hypothetical Total cost --> WFIT: {self.total_cost_wfit}, Simple: {self.total_cost_simple}, WFIT/Simple: {self.total_cost_wfit/self.total_cost_simple}")
         print(f"*** Hypothetical Total Cost No-Index --> {self.total_no_index_cost}")
 
-        print(f"\nRecommendation time for query #{self.n_pos}: {end_time_3 - start_time_1} seconds")
-        print(f"Index materialization time for query #{self.n_pos}: {config_materialization_time} seconds")
-        print(f"Execution time for query #{self.n_pos} --> {execution_time} seconds")
+        print(f"\nRecommendation time for query #{self.n_pos}: {end_time_3 - start_time_1} seconds"): 
+        if materialize: print(f"Index materialization time for query #{self.n_pos}: {config_materialization_time} seconds")
+        if execute: print(f"Execution time for query #{self.n_pos} --> {execution_time} seconds")
         print(f"\n(Partitioning: {end_time_1 - start_time_1} seconds, Repartitioning: {end_time_2 - start_time_2} seconds, Analyzing: {end_time_3 - start_time_3} seconds), Materializing config: {config_materialization_time} seconds, Executing query: {execution_time} seconds")
         
-        print(f"\nTotal recommendation time so far --> {self.total_recommendation_time} seconds")
-        print(f"Total materialization time so far --> {self.total_materialization_time} seconds")
-        print(f"Total execution time so far --> {self.total_execution_time_actual} seconds")
-        print(f"Total time so far --> {self.total_time_actual} seconds")
+        if update_time:
+            print(f"\nTotal recommendation time so far --> {self.total_recommendation_time} seconds")
+            print(f"Total materialization time so far --> {self.total_materialization_time} seconds")
+            print(f"Total execution time so far --> {self.total_execution_time_actual} seconds")
+            print(f"Total time so far --> {self.total_time_actual} seconds")
 
-        print(f"\nIndex usage stats:")
-        for index_id in self.index_usage:
-            print(f"\tIndex {index_id}: {self.index_usage[index_id]}")
+        if execute:
+            print(f"\nIndex usage stats:")
+            for index_id in self.index_usage:
+                print(f"\tIndex {index_id}: {self.index_usage[index_id]}")
 
 
     # Simple baseline recommendation: just the used indexes in the IBG root node, i.e. these are the indexes from 
@@ -810,8 +877,6 @@ class WFIT:
                 
 
     # repartition the stable partitions based on the new partitions
-    # TODO: Maybe check how much the new partitions differ from the old ones before repartitioning, need to define a metric for this
-    # e.g. could maybe count what fraction of the old partitions are still present in the new partitions...
     def repartition(self, new_partitions, verbose):
         # all indexes recommmendations across the WFA instances from previous round
         S_curr = set(chain(*self.current_recommendations.values()))
@@ -1080,6 +1145,8 @@ class WFIT:
 
     # partition the new candidate set into clusters 
     # (need to optimize this function, currently it is a naive implementation)
+    # TODO: Maybe check how much the new partitions differ from the old ones before repartitioning, need to define a metric for this
+    # e.g. could maybe count what fraction of the old partitions are still present in the new partitions...based on that, decide whether to repartition or not
     def choose_partition(self, N_workload, D, verbose):
         
         # compute total loss, i.e. sum of doi across indexes from pairs of partitions
