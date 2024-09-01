@@ -11,7 +11,7 @@ import subprocess
 
 
 # restart the PostgreSQL server (source installation)
-def restart_postgresql():
+def restart_postgresql(clear_cache=False):
     try:
         # Replace '/usr/lib/postgresql/14/bin/pg_ctl' with the path to pg_ctl 
         # Replace '/var/lib/postgresql/14/main' with the path to data directory
@@ -23,6 +23,20 @@ def restart_postgresql():
         #print("PostgreSQL stopped successfully.")
     except subprocess.CalledProcessError as e:
         print(f"An error occurred while stopping PostgreSQL: {e}")
+
+    if clear_cache:
+        try:
+            # Clear cache
+            subprocess.run([
+                'sudo', 'sync'
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            subprocess.run([
+                'echo', '3', '|', 'sudo', 'tee', '/proc/sys/vm/drop_caches'
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            print("Cache cleared successfully.")
+        
+        except subprocess.CalledProcessError as e:
+            print(f"An error occurred while clearing cache: {e}")
 
 
     try:
