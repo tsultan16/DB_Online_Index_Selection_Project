@@ -547,14 +547,14 @@ def process_node_chunk(args):
 
 class WFIT:
 
-    def __init__(self, S_0=[], max_key_columns=None, include_cols=False, max_indexes_per_table=3, max_U=30, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, idxCnt=25, stateCnt=500, histSize=1000, rand_cnt=100, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1):
+    def __init__(self, S_0=[], max_key_columns=None, include_cols=False, max_indexes_per_table=3, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, idxCnt=25, stateCnt=500, histSize=1000, rand_cnt=100, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1):
         # initial set of materialzed indexes
         self.S_0 = S_0
         # maximum number of key columns in an index
         self.max_key_columns = max_key_columns
         # allow include columns in indexes
         self.include_cols = include_cols
-        # maximum number of candidate indexes for IBG 
+        # maximum number of indexes to monitor
         self.max_U = max_U
         # maximum number of nodes in IBG
         self.ibg_max_nodes = ibg_max_nodes
@@ -655,17 +655,35 @@ class WFIT:
 
 
     # update WFIT over next batch of queries (i.e. mini workload)
-    def process_WFIT_batch(self, query_objects, verbose=False):
+    def process_WFIT_batch(self, query_objects, restart_server=False, clear_cache=False, remove_stale_U=False, remove_stale_freq=1, verbose=True):
         self.n_round += 1
         previous_config = list(self.M.values())
         # process each query in the workload 
         if verbose: print(f"Processing batch of queries...\n")
         start_time = time.time()
-        for query_object in query_objects:
-            self.process_WFIT(query_object, execute=False, materialize=False, verbose=verbose, update_time=False)
+        for i, query_object in enumerate(query_objects):
+            if verbose: 
+                print(f"\nProcessing query ({i+1}/{len(query_objects)})...")
+                print('----------------------------------------------------')
+
+            self.n_pos += 1        
+            # generate new partitions 
+            if verbose: print(f"\tGenerating new partitions for query #{self.n_pos}")
+            new_partitions, need_to_repartition, ibg = self.choose_candidates(self.n_pos, query_object, remove_stale_U, remove_stale_freq, verbose=verbose)
+            # repartition if necessary
+            if need_to_repartition:
+                if verbose: print(f"\tRepartitioning...")
+                self.repartition(new_partitions, verbose)
+            # analyze the query and get recommendation
+            if verbose: print(f"\tAnalyzing...")
+            all_indexes_added, all_indexes_removed = self.analyze_query(query_object, ibg, verbose=verbose)
+            if verbose:
+                print(f"\tRecommendation Indexes added:   {[index.index_id for index in all_indexes_added]}")
+                print(f"\tRecommendation Indexes removed: {[index.index_id for index in all_indexes_removed]}")
+
         end_time = time.time()
         recommendation_time = end_time - start_time
-        if verbose: print(f"Recommendation time for batch of queries: {recommendation_time} s")
+        if verbose: print(f"\nRecommendation time for batch of queries: {recommendation_time} s")
 
         # find out which indexes are added and removed at the end of the batch
         all_indexes_added = []
@@ -680,14 +698,18 @@ class WFIT:
         # materialize new configuration
         config_materialization_time = self.materialize_configuration(all_indexes_added, all_indexes_removed, verbose)
         if verbose: 
-            print(f"\tConfiguration materialization time: {config_materialization_time} s\n")
+            print(f"\nConfiguration materialization time: {config_materialization_time} s\n")
             print(f"{len(self.M)} currently materialized indexes: {[index.index_id for index in self.M.values()]}\n")
+
+        # restart the server before batch query execution
+        #restart_postgresql()    
 
         # execute the batch of queries with the new configuration
         batch_execution_time = 0
         for i, query_object in enumerate(query_objects):
-            # restart the server before each query execution
-            restart_postgresql()
+            if restart_server:
+                # restart the server before each query execution
+                restart_postgresql(clear_cache=clear_cache)
             if verbose: print(f"Executing query ({i+1}/{len(query_objects)})...")
             conn = create_connection()
             execution_time, rows, table_access_info, index_access_info, bitmap_heapscan_info = execute_query(conn, query_object.query_string, with_explain=True, return_access_info=True)
@@ -699,6 +721,7 @@ class WFIT:
             # update index usage stats
             for index_id in index_access_info:
                 self.index_usage[index_id] += 1
+        print(f"\nBatch execution time: {batch_execution_time} s")
 
         self.total_recommendation_time += recommendation_time
         self.total_materialization_time += config_materialization_time
@@ -715,7 +738,7 @@ class WFIT:
         for index_id in self.index_usage:
             print(f"\tIndex {index_id}: {self.index_usage[index_id]}")
 
-            
+
 
     # update WFIT step for next query in workload (this is the MAIN INTERFACE for generating an index configuration recommendation)
     def process_WFIT(self, query_object, remove_stale_U=False, remove_stale_freq=1, execute=True, materialize=True, verbose=False, update_time=True):
@@ -723,12 +746,12 @@ class WFIT:
         previous_config = list(self.M.values())
  
         # get estimated no index cost for the query
-        conn = create_connection()
-        self.total_no_index_cost += (hypo_query_cost(conn, query_object, [], currently_materialized_indexes=list(self.M.values())) * self.execution_cost_scaling)
-        close_connection(conn)
+        #conn = create_connection()
+        #self.total_no_index_cost += (hypo_query_cost(conn, query_object, [], currently_materialized_indexes=list(self.M.values())) * self.execution_cost_scaling)
+        #close_connection(conn)
 
         # generate new partitions 
-        if verbose: print(f"Generating new partitions for query #{self.n_pos}")
+        if verbose: print(f"\nGenerating new partitions for query #{self.n_pos}")
         start_time_1 = time.time()
         new_partitions, need_to_repartition, ibg = self.choose_candidates(self.n_pos, query_object, verbose=verbose)
         end_time_1 = time.time()
@@ -753,6 +776,7 @@ class WFIT:
                 print(f"\n{len(self.M)} currently materialized indexes: {[index.index_id for index in self.M.values()]}\n") 
         else:
             config_materialization_time = 0
+            print(f"\n{len(self.M)} currently recommended indexes: {[index.index_id for index in self.M.values()]}\n") 
 
         # execute the query with the new configuration
         if execute:
@@ -806,7 +830,7 @@ class WFIT:
         print(f"*** Hypothetical Total cost --> WFIT: {self.total_cost_wfit}, Simple: {self.total_cost_simple}, WFIT/Simple: {self.total_cost_wfit/self.total_cost_simple}")
         print(f"*** Hypothetical Total Cost No-Index --> {self.total_no_index_cost}")
 
-        print(f"\nRecommendation time for query #{self.n_pos}: {end_time_3 - start_time_1} seconds"): 
+        print(f"\nRecommendation time for query #{self.n_pos}: {end_time_3 - start_time_1} seconds")
         if materialize: print(f"Index materialization time for query #{self.n_pos}: {config_materialization_time} seconds")
         if execute: print(f"Execution time for query #{self.n_pos} --> {execution_time} seconds")
         print(f"\n(Partitioning: {end_time_1 - start_time_1} seconds, Repartitioning: {end_time_2 - start_time_2} seconds, Analyzing: {end_time_3 - start_time_3} seconds), Materializing config: {config_materialization_time} seconds, Executing query: {execution_time} seconds")
@@ -834,15 +858,25 @@ class WFIT:
 
     # check for stale indexes in U and remove them
     def remove_stale_indexes_U(self, verbose):
-        # find out which indexes have loweest benefit statistics
+        excess = len(self.U) - self.max_U
+        if excess <= 0:
+            return
+        
+        # get index benefit statistics
         avg_benefit = {}
+        indexes_no_data = []
         for index_id in self.U:
             # compute average benefit of the index from all stats
-            avg_benefit[index_id] = sum([stat[1] for stat in self.idxStats[index_id]]) / len(self.idxStats[index_id])
+            if len(self.idxStats[index_id]) > 0:
+                avg_benefit[index_id] = sum([stat[1] for stat in self.idxStats[index_id]]) / len(self.idxStats[index_id])
+            else:
+                avg_benefit[index_id] = 0
+                indexes_no_data.append(index_id)
 
         # sort indexes by average benefit
         sorted_indexes = sorted(avg_benefit, key=avg_benefit.get, reverse=True)
 
+        """        
         # mark all indexes with zero benefit and not in M and S_0 as stale
         stale_indexes = set()
         for index_id in sorted_indexes:
@@ -857,16 +891,21 @@ class WFIT:
             del self.U[index_id]
             #if verbose: print(f"Number of indexes in U after removal: {len(self.U)}")
             num_removed += 1
+        """
 
-        # keep at most self.max_U of highest benefit indexes in U, make sure to keep all indexes in S_0 and M
-        if self.max_U is not None and len(self.U) > self.max_U:
-            for index_id in sorted_indexes[self.max_U:]:
-                if index_id not in self.M and index_id not in self.S_0 and index_id in self.U:
+        # keep at most self.max_U of highest benefit indexes in U, make sure to keep all indexes in S_0, M, stable partitions and no data indexes
+        print(f"Number of indexes in U: {len(self.U)}")
+        num_removed = 0
+        if excess > 0:
+            # remove indexes in reverse order of benefit until we have self.max_U indexes
+            for index_id in sorted_indexes[::-1]:
+                if index_id not in self.M and index_id not in self.S_0 and index_id not in self.C and index_id not in indexes_no_data:
                     del self.U[index_id]
+                    excess -= 1
                     num_removed += 1
+                if excess == 0:
+                    break
 
-        # remove stale indexes from stable partitions and C (not sure if this is necessary...)
-        
         if verbose:
             #print(f"Average benefit of indexes:")
             #for index_id in sorted_indexes:
@@ -898,7 +937,6 @@ class WFIT:
                 for j, wf_prev in self.W.items(): 
                     X_intersection_Cj = [index for index in X if index in self.stable_partitions[j]] # set(X) & set(self.stable_partitions[j])
                     wf_x += wf_prev[tuple(X_intersection_Cj)]
-
 
                 S_0_1 = [index for index in S_0 if index in P_minus_C] # S_0 & (set(P) - C)
                 X_1 = [index for index in X if index in P_minus_C] # set(X) & (set(P) - C)
@@ -1088,7 +1126,7 @@ class WFIT:
         
 
     # generate stable partitions/sets of indexes for next query in workload
-    def choose_candidates(self, n_pos, query_object, verbose):
+    def choose_candidates(self, n_pos, query_object, remove_stale_U, remove_stale_freq, verbose):
         # extract candidate indexes from the query
         candidate_indexes = self.extract_indexes(query_object)
         # add new candidate indexes to the list of all candidate indexes
@@ -1098,11 +1136,17 @@ class WFIT:
                 self.U[index.index_id] = index
                 num_new += 1
 
+        if verbose: print(f"Extracted {num_new} new indexes from query.")
+
+        # remove stale indexes from U
+        if remove_stale_U and (self.n_pos % remove_stale_freq == 0):
+            if verbose: print(f"Removing stale indexes from U...")
+            self.remove_stale_indexes_U(verbose)
+
         #if len(self.U) > self.max_U:
         #    raise ValueError("Number of candidate indexes exceeds the maximum limit. Aborting WFIT...")
 
         if verbose: 
-            print(f"Extracted {num_new} new indexes from query.")
             print(f"Candidate indexes (including those currently materialized), |U| = {len(self.U)}")
             #print(f"{[index.index_id for index in self.U.values()]}")
 
@@ -1666,7 +1710,7 @@ class HypoGreedy:
     No Index Baseline
 """
 
-def execute_workload_noIndex(workload, drop_indexes=False):
+def execute_workload_noIndex(workload, drop_indexes=False, restart_server=False, clear_cache=False):
     if drop_indexes:
         print(f"*** Dropping all existing indexes...")
         # drop all existing indexes
@@ -1678,14 +1722,17 @@ def execute_workload_noIndex(workload, drop_indexes=False):
     # execute workload without any indexes
     total_time = 0
     for i, query_object in enumerate(workload):
-        # restart the server before each query execution
-        restart_postgresql()
+        if restart_server:
+            # restart the server before each query execution
+            restart_postgresql(clear_cache=clear_cache)
+        
+        print(f"\nExecuting query# {i+1}...")
         conn = create_connection()
-        execution_time, rows = execute_query(conn, query_object.query_string, with_explain=True, print_results=False)
+        execution_time, rows, table_access_info, index_access_info, bitmap_heapscan_info = execute_query(conn, query_object.query_string, with_explain=True, return_access_info=True)
         close_connection(conn)
         execution_time /= 1000
+        print(f"\tExecution_time: {execution_time} s, Indexes accessed: {list(index_access_info.keys())}\n")
         total_time += execution_time
-        print(f"\tExecution time for query# {i+1}: {execution_time} s, Total time so far: {total_time} s")
 
     print(f"Total execution time for workload without any indexes: {total_time} seconds")
     
