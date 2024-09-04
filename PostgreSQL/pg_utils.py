@@ -794,6 +794,7 @@ class Index:
         self.size = None
         self.creation_time = None
         self.current_oid = None
+        self.is_primary = False
 
     def __str__(self):
         return f"Index name: {self.index_id}, Key cols: {self.index_columns}, Include cols: {self.include_columns}, Current OID: {self.current_oid}"
@@ -872,6 +873,7 @@ def ssb_pk_index_objects():
         index_id = f"pk_{table_name}"
         index_object = Index(table_name, index_id, index_columns)
         index_object.current_oid = pk_index_oids.get(index_id)
+        index_object.is_primary = True
         pk_indexes.append(index_object)
 
     return pk_indexes
