@@ -145,11 +145,12 @@ def get_primary_key_indexes(conn):
     try:
         cur = conn.cursor()
 
-        # SQL query to get primary key indexes and their OIDs
+        # SQL query to get primary key indexes, their OIDs, and sizes
         query = """
         SELECT
             c.relname AS index_name,
-            c.oid AS index_oid
+            c.oid AS index_oid,
+            pg_relation_size(c.oid) AS size_bytes
         FROM
             pg_index i
         JOIN
@@ -168,11 +169,12 @@ def get_primary_key_indexes(conn):
         cur.close()
         conn.close()
 
-        # Return the primary key indexes along with their OIDs
+        # Return the primary key indexes along with their OIDs and sizes
         pk_indexes = {}
-        for index_name, index_oid in indexes:
+        for index_name, index_oid, size_b in indexes:   
             if index_name.startswith("pk_"):
-                pk_indexes[index_name] = index_oid
+                size_mb = size_b / (1024 * 1024)  # Convert bytes to megabytes
+                pk_indexes[index_name] = (index_oid, size_mb)
 
         return pk_indexes
 
@@ -250,8 +252,8 @@ def create_index(conn, index_object):
 
 
         # Get the size of the newly created index (in Mb)
-        cur.execute(f"SELECT pg_relation_size('{index_id}') / 1048576.0")
-        index_size = cur.fetchone()[0]
+        cur.execute(f"SELECT pg_relation_size('{index_id}')")
+        index_size = cur.fetchone()[0] / (1024 * 1024)  # Convert bytes to megabytes
 
         # Retrieve the OID of the newly created index
         cur.execute(f"SELECT oid FROM pg_class WHERE relname = '{index_id.lower()}'")
@@ -797,7 +799,7 @@ class Index:
         self.is_primary = False
 
     def __str__(self):
-        return f"Index name: {self.index_id}, Key cols: {self.index_columns}, Include cols: {self.include_columns}, Current OID: {self.current_oid}"
+        return f"Index name: {self.index_id}, Key cols: {self.index_columns}, Include cols: {self.include_columns}, Current OID: {self.current_oid}, Size: {self.size} MB"
 
 
 # assign a unique id to a given index
@@ -866,13 +868,15 @@ def extract_query_indexes(query_object, max_key_columns=None, include_cols=False
 def ssb_pk_index_objects():
     index_cols = {'lineorder': ['lo_orderkey', 'lo_linenumber'], 'customer': ['c_custkey'], 'supplier': ['s_suppkey'], 'part': ['p_partkey'], 'dwdate': ['d_datekey']}
     conn = create_connection()
-    pk_index_oids = get_primary_key_indexes(conn)
+    pk_index_info = get_primary_key_indexes(conn)
     close_connection(conn)
     pk_indexes = []
     for table_name, index_columns in index_cols.items():
         index_id = f"pk_{table_name}"
         index_object = Index(table_name, index_id, index_columns)
-        index_object.current_oid = pk_index_oids.get(index_id)
+        oid, size = pk_index_info.get(index_id)
+        index_object.current_oid = oid
+        index_object.size = size
         index_object.is_primary = True
         pk_indexes.append(index_object)
 
