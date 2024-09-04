@@ -140,6 +140,47 @@ def get_all_table_sizes(conn):
     return table_sizes
 
 
+# get all primary clustered indexes and their oid
+def get_primary_key_indexes(conn):
+    try:
+        cur = conn.cursor()
+
+        # SQL query to get primary key indexes and their OIDs
+        query = """
+        SELECT
+            c.relname AS index_name,
+            c.oid AS index_oid
+        FROM
+            pg_index i
+        JOIN
+            pg_class c ON c.oid = i.indexrelid
+        WHERE
+            i.indisprimary;
+        """
+
+        # Execute the query
+        cur.execute(query)
+
+        # Fetch all results
+        indexes = cur.fetchall()
+
+        # Close the cursor and connection
+        cur.close()
+        conn.close()
+
+        # Return the primary key indexes along with their OIDs
+        pk_indexes = {}
+        for index_name, index_oid in indexes:
+            if index_name.startswith("pk_"):
+                pk_indexes[index_name] = index_oid
+
+        return pk_indexes
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return {}
+
+
 # execute a query on postgres DB
 def execute_query(conn, query_string, with_explain=True,  return_access_info=False, print_results=False):    
     # Create a cursor object
@@ -495,17 +536,21 @@ def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False):
         total_cost = plan_json[0]['Plan']['Total Cost']
  
         # Check for index scan usage
-        index_scans = find_index_scans(plan_json[0]['Plan'])
+        table_access_info, index_access_info, bitmap_heapscan_info = extract_access_info(plan_json[0]['Plan'])
+        #print(f"Index Access Info: {index_access_info}")
         indexes_used = []
-
-        if len(index_scans)>0:
+        if len(index_access_info)>0:
             #print("Indexes used in the query plan:")
-            for index_name, scan_type, scan_cost in index_scans:
+            for index_name, index_info in index_access_info.items():
+                scan_type = index_info['scan_type']
+                scan_cost = index_info['total_cost']
                 #print(f"- {index_name}")
                 # only consider hypothetical index scans
                 if '<' in index_name:
                     index_oid = int(index_name.split('<')[1].split('>')[0])
-                    indexes_used.append((index_oid, scan_type, scan_cost)) 
+                    indexes_used.append((index_oid, scan_type, scan_cost, 2)) # 2 for secondary indexes
+                else:
+                    indexes_used.append((index_name, scan_type, scan_cost, 1)) # 1 for primary clustered indexes      
 
         else:
             print("No index scans were explicitly noted in the query plan.")
@@ -638,6 +683,7 @@ def extract_access_info(plan):
             index_name = current_node.get('Index Name')
             if index_name:
                 scan_type = current_node.get('Node Type')
+                total_cost = current_node.get('Total Cost')
                 actual_rows = current_node.get('Actual Rows')
                 actual_startup_time = current_node.get('Actual Startup Time')
                 actual_total_time = current_node.get('Actual Total Time')  
@@ -646,11 +692,12 @@ def extract_access_info(plan):
                 shared_read_blocks = current_node.get('Shared Read Blocks')
                 local_hit_blocks = current_node.get('Local Hit Blocks')
                 local_read_blocks = current_node.get('Local Read Blocks')
-                index_access_info[index_name] = {'table':table_name, 'scan_type': scan_type, 'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}  
+                index_access_info[index_name] = {'table':table_name, 'scan_type': scan_type, 'total_cost': total_cost, 'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}  
 
         elif current_node.get('Node Type') in ['Bitmap Heap Scan']:
             table_name = current_node.get('Relation Name')
             if table_name:
+                total_cost = current_node.get('Total Cost')
                 scan_type = current_node.get('Node Type')
                 actual_rows = current_node.get('Actual Rows')
                 actual_startup_time = current_node.get('Actual Startup Time')
@@ -660,13 +707,14 @@ def extract_access_info(plan):
                 shared_read_blocks = current_node.get('Shared Read Blocks')
                 local_hit_blocks = current_node.get('Local Hit Blocks')
                 local_read_blocks = current_node.get('Local Read Blocks')
-                bitmap_heapscan_info[table_name] = {'table':table_name, 'scan_type': scan_type, 'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}
+                bitmap_heapscan_info[table_name] = {'table':table_name, 'scan_type': scan_type, 'total_cost': total_cost, 'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}
 
 
         # check for nodes that indicate table sequential scans
         elif current_node.get('Node Type') in ['Seq Scan']:
             table_name = current_node.get('Relation Name')
             if table_name:
+                total_cost = current_node.get('Total Cost')
                 actual_rows = current_node.get('Actual Rows')
                 actual_startup_time = current_node.get('Actual Startup Time')
                 actual_total_time = current_node.get('Actual Total Time')
@@ -674,7 +722,7 @@ def extract_access_info(plan):
                 shared_read_blocks = current_node.get('Shared Read Blocks')
                 local_hit_blocks = current_node.get('Local Hit Blocks')
                 local_read_blocks = current_node.get('Local Read Blocks')
-                table_access_info[table_name] = {'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}
+                table_access_info[table_name] = {'total_cost': total_cost, 'actual_rows': actual_rows, 'actual_startup_time': actual_startup_time, 'actual_total_time': actual_total_time, 'shared_hit_blocks': shared_hit_blocks, 'shared_read_blocks': shared_read_blocks, 'local_hit_blocks': local_hit_blocks, 'local_read_blocks': local_read_blocks}
 
 
         # Add subplans to the stack
@@ -801,6 +849,21 @@ def extract_query_indexes(query_object, max_key_columns=None, include_cols=False
 
     return candidate_indexes            
 
+
+# create index objects for primary clustered indexes
+def ssb_pk_index_objects():
+    index_cols = {'lineorder': ['lo_orderkey', 'lo_linenumber'], 'customer': ['c_custkey'], 'supplier': ['s_suppkey'], 'part': ['p_partkey'], 'dwdate': ['d_datekey']}
+    conn = create_connection()
+    pk_index_oids = get_primary_key_indexes(conn)
+    close_connection(conn)
+    pk_indexes = []
+    for table_name, index_columns in index_cols.items():
+        index_id = f"pk_{table_name}"
+        index_object = Index(table_name, index_id, index_columns)
+        index_object.current_oid = pk_index_oids.get(index_id)
+        pk_indexes.append(index_object)
+
+    return pk_indexes
 
 
 
