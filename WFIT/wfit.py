@@ -135,7 +135,7 @@ class IBG:
         # get cost and used indexes
         cost, indexes_used = get_query_cost_estimate_hypo_indexes(conn, self.q.query_string, show_plan=False)
         # map used index oids to index objects
-        used = [oid2index[oid] for oid, scan_type, scan_cost in indexes_used]
+        used = [oid2index[oid] for oid, scan_type, scan_cost, index_category in indexes_used]
         # drop hypothetical indexes
         bulk_drop_hypothetical_indexes(conn)
         if self.conn is None:
@@ -547,9 +547,16 @@ def process_node_chunk(args):
 
 class WFIT:
 
-    def __init__(self, S_0=[], max_key_columns=None, include_cols=False, max_indexes_per_table=3, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, idxCnt=25, stateCnt=500, histSize=1000, rand_cnt=100, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1):
+    def __init__(self, max_key_columns=None, include_cols=False, max_indexes_per_table=3, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, idxCnt=25, stateCnt=500, histSize=1000, rand_cnt=100, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1):
+        # bulk drop all materialized secondary indexes
+        print(f"*** Dropping all materialized secondary indexes...")
+        conn = create_connection()
+        drop_all_indexes(conn)
+        close_connection(conn)
+
         # initial set of materialzed indexes
-        self.S_0 = S_0
+        self.pk_indexes = ssb_pk_index_objects() 
+        self.S_0 = self.pk_indexes # only primary key indexes are materialized initially
         # maximum number of key columns in an index
         self.max_key_columns = max_key_columns
         # allow include columns in indexes
@@ -577,16 +584,18 @@ class WFIT:
         # fudge factor for execution cost
         self.execution_cost_scaling = execution_cost_scaling
         # growing list of candidate indexes (initially contains S_0)
-        self.U = {index.index_id:index for index in S_0}
+        self.U = {index.index_id:index for index in self.S_0}
         # index benefit and interaction statistics
         self.idxStats = defaultdict(list)
         self.intStats = defaultdict(list)
         # list of currently monitored indexes
-        self.C = {index.index_id:index for index in S_0} 
+        self.C = {index.index_id:index for index in self.S_0} 
         # list of currently materialized indexes
-        self.M = {index.index_id:index for index in S_0}  
+        self.M = {index.index_id:index for index in self.S_0}  
         # initialize stable partitions (each partition is a singleton set of indexes from S_0)
-        self.stable_partitions = [[index] for index in S_0] if S_0 else [[]]
+        self.stable_partitions = [[index] for index in self.S_0] if self.S_0 else [[]]
+        # initialize current recommendations for each stable partition
+        self.current_recommendations = {i:indexes for i, indexes in enumerate(self.stable_partitions)}
         # keep track of candidate index sizes
         self.index_size = {}
         self.n_pos = 0
@@ -597,26 +606,13 @@ class WFIT:
         print(f"##################################################################")
         # initialize work function instance for each stable partition
         self.W = self.initilize_WFA(self.stable_partitions)
-        # initialize current recommendations for each stable partition
-        self.current_recommendations = {i:indexes for i, indexes in enumerate(self.stable_partitions)}
 
-
-        print(f"Initial set of materialized indexes: {[index.index_id for index in S_0]}")
+        print(f"\nInitial set of materialized indexes: {[index.index_id for index in self.S_0]}")
         print(f"Stable partitions: {[[index.index_id for index in P] for P in self.stable_partitions]}")
-        print(f"Initial work function instances: ")
-        for i, wf in self.W.items():
-            print(f"\tWFA Instance #{i}: {wf}")
-
         print(f"\nMaximum number of candidate indexes tracked: {idxCnt}")
         print(f"Maximum number of MTS states/configurations: {stateCnt}")
         print(f"Maximum number of historical index statistics kept: {histSize}")
         print(f"Number of randomized clustering iterations: {rand_cnt}")
-
-        # bulk drop all materialized indexes
-        print(f"*** Dropping all materialized indexes...")
-        conn = create_connection()
-        drop_all_indexes(conn)
-        close_connection(conn)
         print(f"##################################################################\n")
 
         # set random seed
@@ -642,16 +638,18 @@ class WFIT:
         print(f"Initializing WFA instances for {len(stable_partitions)} stable partitions...")
         W = {}
         for i, P in enumerate(stable_partitions):
+            print(f"\tPartition #{i+1}: {[index.index_id for index in P]}")
+            S_0 = self.current_recommendations[i]
             # initialize all MTS states, i.e. power set of indexes in the partition
             states = [tuple(sorted(state, key=lambda x: x.index_id)) for state in powerset(P)]
             # initialize work function instance for the partition
-            W[i] = {tuple(X):self.compute_transition_cost(self.S_0, X) for X in states}    
-
-        for i in W:
-            print(f"WFA instance #{i}: {W[i]}")
+            W[i] = {}
+            for X in states:
+                sorted_X = tuple(sorted(X, key=lambda x: x.index_id))
+                W[i][sorted_X] = self.compute_transition_cost(S_0, X) 
+                print(f"\t\t w[{tuple([index.index_id for index in sorted_X])}]: {W[i][sorted_X]}")
 
         return W
-
 
 
     # update WFIT over next batch of queries (i.e. mini workload)
@@ -672,14 +670,18 @@ class WFIT:
             new_partitions, need_to_repartition, ibg = self.choose_candidates(self.n_pos, query_object, remove_stale_U, remove_stale_freq, verbose=verbose)
             # repartition if necessary
             if need_to_repartition:
-                if verbose: print(f"\tRepartitioning...")
+                if verbose: print(f"\n\tRepartitioning...\n")
                 self.repartition(new_partitions, verbose)
             # analyze the query and get recommendation
-            if verbose: print(f"\tAnalyzing...")
+            if verbose: print(f"\n\tAnalyzing...\n")
             all_indexes_added, all_indexes_removed = self.analyze_query(query_object, ibg, verbose=verbose)
             if verbose:
                 print(f"\tRecommendation Indexes added:   {[index.index_id for index in all_indexes_added]}")
                 print(f"\tRecommendation Indexes removed: {[index.index_id for index in all_indexes_removed]}")
+
+            #########    
+            return
+            #########
 
         end_time = time.time()
         recommendation_time = end_time - start_time
@@ -893,7 +895,8 @@ class WFIT:
             num_removed += 1
         """
 
-        # keep at most self.max_U of highest benefit indexes in U, make sure to keep all indexes in S_0, M, stable partitions and no data indexes
+        # keep at most self.max_U of highest benefit indexes in U, make sure to keep all indexes in S_0, M, stable partitions and indexes for which we have no stats
+        # (on certain rounds we may have a lot of indexes with no stats, so those rounds will be slower)
         print(f"Number of indexes in U: {len(self.U)}")
         num_removed = 0
         if excess > 0:
@@ -921,34 +924,57 @@ class WFIT:
         S_curr = set(chain(*self.current_recommendations.values()))
         C = set(self.C.values()) 
         S_0 = set(self.S_0)
-        
+        if verbose: 
+            print(f"S0 = {[index.index_id for index in S_0]}")
+            print(f"C = {[index.index_id for index in C]}")
+
         # re-initizlize WFA instances and recommendations for each new partition
         if verbose: print(f"Reinitializing WFA instances...")
         W = {}
         recommendations = {}
         for i, P in enumerate(new_partitions):
             P_minus_C = [index for index in P if index not in C]
+            if verbose:
+                print(f"\tNew partition # {i+1}: {[index.index_id for index in P]}")
+                print(f"\tIndexes in new partition not in C: {[index.index_id for index in P_minus_C]}")
             partition_all_configs = [tuple(sorted(state, key=lambda x: x.index_id)) for state in powerset(P)]
             wf = {}
             # initialize work function values for each state
-            #if verbose: print(f"\tNew partition # {i}")
             for X in partition_all_configs:
+                if verbose: print(f"\t\tState: {tuple([index.index_id for index in X])}")
                 wf_x = 0
-                for j, wf_prev in self.W.items(): 
-                    X_intersection_Cj = [index for index in X if index in self.stable_partitions[j]] # set(X) & set(self.stable_partitions[j])
-                    wf_x += wf_prev[tuple(X_intersection_Cj)]
+                # iterate over old partitions and compute accumulated wf value
+                for j, wf_prev in self.W.items():
+                    # check if old partition overlaps with new partition
+                    overlap = set(P) & set(self.stable_partitions[j])
+                    if verbose: 
+                        print(f"\t\tOld Partition # {j+1} --> {[index.index_id for index in self.stable_partitions[j]]}")
+                        print(f"\t\tOverlap between new partition and old partition: {[index.index_id for index in overlap]}")
+                    if len(overlap) > 0:
+                        X_intersection_Cj = [index for index in X if index in self.stable_partitions[j]] # set(X) & set(self.stable_partitions[j])
+                        X_intersection_Cj_sorted = tuple(sorted(X_intersection_Cj, key=lambda x: x.index_id))  
+                        wf_x += wf_prev[tuple(X_intersection_Cj_sorted)]
+                        if verbose: 
+                            print(f"\t\t\tIntersection with old partition: {[index.index_id for index in X_intersection_Cj]}")
+                            print(f"\t\t\tAccumulated wf value: {wf_x}")
+
 
                 S_0_1 = [index for index in S_0 if index in P_minus_C] # S_0 & (set(P) - C)
                 X_1 = [index for index in X if index in P_minus_C] # set(X) & (set(P) - C)
                 transition_cost_term = self.compute_transition_cost(S_0_1, X_1)
+                if verbose:
+                    print(f"\t\tS_0_1: {[index.index_id for index in S_0_1]}, X_1: {[index.index_id for index in X_1]}")
+                    print(f"\t\tTransition cost term: {transition_cost_term}")
+
                 wf[X] = wf_x + transition_cost_term #- self.total_no_index_cost
-                #if verbose: print(f"\t\t w[{tuple([index.index_id for index in X])}] --> {wf[X]}   ({wf_x} + {transition_cost_term} - {self.total_no_index_cost})")
+                #if verbose: print(f"\n\t\t w[{tuple([index.index_id for index in X])}] --> {wf[X]}   ({wf_x} + {transition_cost_term} - {self.total_no_index_cost})")
+                if verbose: print(f"\n\t\t w[{tuple([index.index_id for index in X])}] --> {wf[X]}   ({wf_x} + {transition_cost_term})\n")
             
             W[i] = wf
             # initialize current state/recommended configuration of the WFA instance
             P_intersect_S_curr = [index for index in P if index in S_curr] # list(set(P) & S_curr)
             recommendations[i] = P_intersect_S_curr
-            #if verbose: print(f"\tRecommendation for partition # {i}: {[index.index_id for index in recommendations[i]]}")
+            if verbose: print(f"\tRecommendation for partition # {i}: {[index.index_id for index in recommendations[i]]}\n")
 
         # replace current stable partitions, WFA instances and recommendations with the new ones
         self.stable_partitions = new_partitions
@@ -973,15 +999,15 @@ class WFIT:
 
     # update WFA instance on each stable partition and get index configuration recommendation
     def analyze_query(self, query_object, ibg, verbose):
-        S_current = set(chain(*self.current_recommendations.values()))
+        #S_current = set(chain(*self.current_recommendations.values()))
         new_recommendations = {}
         # update WFA instance for each stable partition
         all_indexes_added = []
         all_indexes_removed = []
         for i in self.W:
             if verbose: print(f"Updating WFA instance: {i}")
-            #self.W[i], new_recommendations[i]  = self.process_WFA(self.W[i], self.current_recommendations[i], ibg, verbose)
-            self.W[i], new_recommendations[i]  = self.process_WFA(self.W[i], S_current, ibg, verbose)
+            self.W[i], new_recommendations[i]  = self.process_WFA(self.W[i], self.current_recommendations[i], ibg, verbose)
+            #self.W[i], new_recommendations[i]  = self.process_WFA(self.W[i], S_current, ibg, verbose)
 
             # materialize new recommendation
             indexes_added = set(new_recommendations[i]) - set(self.current_recommendations[i])
@@ -1003,6 +1029,11 @@ class WFIT:
 
     # materialize new configuration
     def materialize_configuration(self, all_indexes_added, all_indexes_removed, verbose):
+        # check if any removed indexes are pk indexes
+        pk_indexes_removed = [index for index in all_indexes_removed if index in self.pk_indexes]
+        if pk_indexes_removed:
+            raise ValueError(f"Error: Cannot remove primary key indexes: {[index.index_id for index in pk_indexes_removed]}")
+        
         # materialize new configuration
         if verbose: 
             print(f"\nNew indexes added this round: {[index.index_id for index in all_indexes_added]}")
@@ -1325,8 +1356,15 @@ class WFIT:
             partition_match.append(matched)
         # count how many partitions are different
         num_diff = len([match for match in partition_match if not match])
-        print(f"Fraction of new partitions that don't match old partitions: {num_diff}/{len(partition_match)}")
-        
+        if verbose: 
+            print(f"\nFraction of new partitions that don't match old partitions: {num_diff}/{len(partition_match)}")
+            indexes_in_new_partitions = set([index.index_id for partition in bestSolution for index in partition])
+            indexes_in_old_partitions = set([index.index_id for partition in self.stable_partitions for index in partition])
+            indexes_added = indexes_in_new_partitions - indexes_in_old_partitions
+            indexes_removed = indexes_in_old_partitions - indexes_in_new_partitions
+            print(f"{len(indexes_added)} indexes added to new partitions: {indexes_added}")
+            print(f"{len(indexes_removed)} indexes removed from old partitions: {indexes_removed}\n")    
+
         need_to_repartition = not all(partition_match)                   
 
         return bestSolution, need_to_repartition
@@ -1476,13 +1514,16 @@ class WFIT:
     def compute_transition_cost(self, S_old, S_new):
         # find out which indexes are added
         added_indexes = set(S_new) - set(S_old)
+        indexes_removed = set(S_old) - set(S_new)
         
         # compute cost of creating the added indexes
         transition_cost = sum([self.get_index_creation_cost(index) for index in added_indexes])
+        # add infinite cost if any primary index is removed (we don't want to remove primary indexes)
+        if any([index.is_primary for index in indexes_removed]):
+            transition_cost = float('inf')
+
         #print(f"\t\t\tComputing transition cost for state: {tuple([index.index_id for index in S_old])} --> {tuple([index.index_id for index in S_new])} = {transition_cost}")
         return transition_cost
-
-
 
 
 """
