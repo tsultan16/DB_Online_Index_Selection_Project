@@ -816,12 +816,16 @@ def get_index_id(index_cols, table_name, include_cols=()):
 # TODO: option for max number of index key/include columns 
 # TODO: option for including group_by/order_by columns (since some queries may benefit from having sorted data inside indexes and avoid sorting)
 def extract_query_indexes(query_object, max_key_columns=None, include_cols=False):
+    pk_indexes = ssb_pk_index_objects()
+    pk_indexes = {index.table_name:index for index in pk_indexes}
+
     # use only the predicates and payloads for now
     predicates = query_object.predicates
     payload = query_object.payload
 
     candidate_indexes = {}
     for table in predicates:
+        pk_index = pk_indexes.get(table)
         predicate_cols = predicates[table]
         payload_cols = payload[table] if table in payload else []
         # create permutations of the predicate columns
@@ -831,9 +835,12 @@ def extract_query_indexes(query_object, max_key_columns=None, include_cols=False
             max_predicates = len(predicate_cols)    
         for i in range(1, max_predicates+1):
             for index_key_cols in itertools.permutations(predicate_cols, i):
-                index_id = get_index_id(index_key_cols, table)
-                if index_id not in candidate_indexes:
-                    candidate_indexes[index_id] = Index(table, index_id, index_key_cols)
+                # don't create indexes on the same columns as primary clustered indexes
+                if list(pk_index.index_columns) != list(index_key_cols):
+                    index_id = get_index_id(index_key_cols, table)
+                    if index_id not in candidate_indexes:
+                        candidate_indexes[index_id] = Index(table, index_id, index_key_cols)
+                    
                 if include_cols:
                     # remove payload columns that intersect with key columns
                     payload_columns_filtered = tuple(set(payload_cols) - set(index_key_cols))
@@ -848,6 +855,7 @@ def extract_query_indexes(query_object, max_key_columns=None, include_cols=False
     candidate_indexes = list(candidate_indexes.values())
 
     return candidate_indexes            
+
 
 
 # create index objects for primary clustered indexes
