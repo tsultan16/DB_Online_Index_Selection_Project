@@ -682,8 +682,8 @@ class WFIT:
             if verbose: print(f"\n\nAnalyzing...\n")
             all_indexes_added, all_indexes_removed = self.analyze_query(query_object, ibg, verbose=verbose)
             if verbose:
-                print(f"\tRecommendation Indexes added:   {[index.index_id for index in all_indexes_added]}")
-                print(f"\tRecommendation Indexes removed: {[index.index_id for index in all_indexes_removed]}")
+                print(f"Recommendation Indexes added:   {[index.index_id for index in all_indexes_added]}")
+                print(f"Recommendation Indexes removed: {[index.index_id for index in all_indexes_removed]}")
 
         end_time = time.time()
         recommendation_time = end_time - start_time
@@ -958,6 +958,7 @@ class WFIT:
                     #if verbose: 
                     #    print(f"\t\tOld Partition # {j+1} --> {[index.index_id for index in self.stable_partitions[j]]}")
                     #    print(f"\t\tOverlap between new partition and old partition: {[index.index_id for index in overlap]}")
+    
                     if len(overlap) > 0:
                         X_intersection_Cj = [index for index in X if index in self.stable_partitions[j]] # set(X) & set(self.stable_partitions[j])
                         X_intersection_Cj_sorted = tuple(sorted(X_intersection_Cj, key=lambda x: x.index_id))  
@@ -1036,9 +1037,9 @@ class WFIT:
     # materialize new configuration
     def materialize_configuration(self, all_indexes_added, all_indexes_removed, verbose):
         # check if any removed indexes are pk indexes
-        pk_indexes_removed = [index for index in all_indexes_removed if index in self.pk_indexes]
-        if pk_indexes_removed:
-            raise ValueError(f"Error: Cannot remove primary key indexes: {[index.index_id for index in pk_indexes_removed]}")
+        #pk_indexes_removed = [index for index in all_indexes_removed if index in self.pk_indexes]
+        #if pk_indexes_removed:
+        #    raise ValueError(f"Error: Cannot remove primary key indexes: {[index.index_id for index in pk_indexes_removed]}")
         
         # materialize new configuration
         if verbose: 
