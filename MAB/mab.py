@@ -150,6 +150,7 @@ class MAB:
 
             end_time = datetime.datetime.now()
             recommendation_time += (end_time - start_time)    
+            print(f"Time taken for recommendation: {recommendation_time} seconds.")
 
             # materialze configuration then execute current round queries and get observed rewards
             print(f"Materializing configuration and executing queries...")
@@ -176,7 +177,7 @@ class MAB:
         # close the connection
         close_connection(connection)
 
-        print(f"Round completed. Time taken for recommendation: {recommendation_time} seconds.\n")
+        print(f"Round completed.\n")
 
 
     # materialize a new configuration, executes new batch of queries and returns the observed rewards
@@ -545,7 +546,7 @@ class MAB:
         return indices        
 
 
-    # version 2: takees into account, group by and order by columns
+    # version 2: takes into account, group by and order by columns
     def generate_candidate_indices_from_predicates_v2(self, connection, query, verbose=False):
         # get all tables in the db
         tables = get_all_tables(connection)
@@ -784,7 +785,7 @@ class MAB:
         V_inv = np.linalg.inv(self.V)        
         theta = V_inv @ self.b 
 
-        print(f"Theta - parameter vector: \n{theta.reshape(-1)}")
+        #print(f"Theta - parameter vector: \n{theta.reshape(-1)}")
         
         # rescale the parameter corresponding to the size of the index
         theta[1] = theta[1]/creation_cost_reduction_factor  
@@ -800,7 +801,6 @@ class MAB:
         
         #print(f"Expected Reward: \n{expected_reward.reshape(-1)}")
         #print(f"Confidence bounds: \n{confidence_bounds.reshape(-1)}")
-
 
         #################################
         # find most negative upper bound
@@ -834,7 +834,7 @@ class MAB:
             table_filtered_upper_bounds.update({index_id: self.upper_bounds[index_id] for index_id in table_indexes[table_name]})
 
         self.upper_bounds = table_filtered_upper_bounds    
-        print(f"Table filtered indexes: {table_indexes}")
+        #print(f"Table filtered indexes: {table_indexes}")
         print(f"Number of candidate indexes after filtration: {len(self.upper_bounds)}")
 
         # solve knapsack problem to select the best configuration
