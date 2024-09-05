@@ -62,7 +62,7 @@ class MAB:
         else:
             print("Found database size in cache")    
         self.database_size = MAB.database_size_cache    
-        print(f"Database size: {self.database_size}")
+        print(f"Database size: {self.database_size} MB")
         # get all tables and columns info
         if MAB.table_info_cache is None:
             MAB.table_info_cache, MAB.column_info_cache = get_table_and_column_details()
@@ -150,36 +150,32 @@ class MAB:
         start_time = time.perf_counter()
 
         # identify new query templates from the mini workload and update stats    
-        if verbose: print(f"Identifying new query templates from the mini workload...")
+        if verbose: print(f"\nIdentifying new query templates from the mini workload...")
         self.identify_new_query_templates(mini_workload, verbose)
 
         # select queries of interest (QoIs) from past workload and use them to extract candidate indexes, i.e. bandit arms
-        if verbose: print(f"Selecting QoIs and extracting candidate indexes...")
+        if verbose: print(f"\nSelecting QoIs and extracting candidate indexes...")
         QoIs = self.select_queries_of_interest(mini_workload, verbose)
-        self.candidate_indexes = self.extract_candidate_indexes(QoIs, verbose)
+        self.candidate_indexes = self.extract_candidate_indexes(QoIs, False)
 
-        if len(self.candidate_indexes) == 0:
-            print(f"No candidate indexes extracted. Skipping round...")
-            return
-            
         # generate context vectors for each candidate index
-        if verbose: print(f"Generating context vectors...")
+        if verbose: print(f"\nGenerating context vectors...")
         self.context_vectors = self.generate_context_vectors(self.candidate_indexes, False)
 
         # select best configuration/super-arm based on C^2 LinUCB
-        if verbose: print(f"Selecting best configuration...")
+        if verbose: print(f"\nSelecting best configuration...")
         selected_indexes = self.select_best_configuration(self.context_vectors, self.candidate_indexes, verbose)
 
         end_time = time.perf_counter()
         rec_time = (end_time - start_time) * 1000
 
         # materialize the selected indexes
-        if verbose: print(f"Materializing selected indexes...")
+        if verbose: print(f"\nMaterializing selected indexes...")
         mat_time = self.materialize_indexes(selected_indexes, verbose)
         self.materialization_time.append(mat_time)
 
         # execute the mini workload and observe bandit arm rewards
-        if verbose: print(f"Executing mini workload...")
+        if verbose: print(f"\nExecuting mini workload...")
         index_reward, exec_time = self.execute_mini_workload(mini_workload, self.candidate_indexes, selected_indexes, restart_server, verbose)
         self.execution_time.append(exec_time)
 
@@ -197,7 +193,12 @@ class MAB:
         self.selected_indexes_last_round = selected_indexes
 
         print(f"\nRound {self.current_round} completed! Recommendation time: {rec_time:.2f} ms, Materialization time: {mat_time:.2f} ms, Execution time: {exec_time:.2f} ms")
-
+        print(f"\nIndex usage stats:")
+        for index_id, usage_rounds in self.index_usage_rounds.items():
+            print(f"\tIndex ID: {index_id}, Usage Count: {len(usage_rounds)}")
+        print(f"\nMax table scan times:")
+        for table_name, scan_times in self.table_scan_times.items():
+            print(f"\tTable: {table_name}, Max Scan Time: {max(scan_times)} ms")    
 
 
     # identify new query templates from the mini workload and update stats
@@ -231,7 +232,7 @@ class MAB:
                 QoIs.append(query)
 
         if verbose:
-            print(f"\tQueries of Interest (QoIs):")
+            print(f"\n\tQueries of Interest (QoIs):")
             for query in QoIs:
                 print(f"\t\tTemplate ID: {query.template_id}, Frequency: {query.frequency}, First Seen: {query.first_seen}, Last Seen: {query.last_seen}")        
 
@@ -268,6 +269,9 @@ class MAB:
 
     # generate context vectors for each candidate index
     def generate_context_vectors(self, candidate_indexes, verbose):
+        if len(candidate_indexes) == 0:
+            return None
+        
         # generate column context
         column_context_vectors = self.generate_column_context(candidate_indexes)
         # generate derived context
@@ -337,6 +341,9 @@ class MAB:
 
     # select best configuration/super-arm using C^2 LinUCB
     def select_best_configuration(self, context_vectors, candidate_indexes, verbose):
+        if len(candidate_indexes) == 0:
+            return None
+        
         # compute linUCB parameters
         V_inv = np.linalg.inv(self.V)
         theta = V_inv @ self.b
@@ -364,11 +371,11 @@ class MAB:
         if verbose:
             # sort indexes by decreasing order of upper bound
             sorted_indexes = sorted(upper_bounds, key=upper_bounds.get, reverse=True)
-            print(f"\tUpper Bounds:")
+            print(f"\n\tUpper Bounds:")
             for index_id in sorted_indexes:
                 print(f"\t\tIndex ID: {index_id}, Upper Bound: {upper_bounds[index_id]}")
 
-            print(f"\tSelected Indexes:")
+            print(f"\n\tSelected Indexes:")
             print(f"\t\t{list(selected_indexes.keys())}")    
 
         return selected_indexes
@@ -402,11 +409,14 @@ class MAB:
 
     # materialize the selected indexes
     def materialize_indexes(self, selected_indexes, verbose):
+        if selected_indexes is None:
+            return 0    
+
         indexes_added = [index for index in selected_indexes.values() if index.index_id not in self.selected_indexes_last_round]
         indexes_dropped = [index for index in self.selected_indexes_last_round.values() if index.index_id not in selected_indexes]
         if verbose:
-            print(f"\tIndexes Added: {[index.index_id for index in indexes_added]}")
-            print(f"\tIndexes Dropped: {[index.index_id for index in indexes_dropped]}")
+            print(f"\n\tIndexes Added: {[index.index_id for index in indexes_added]}")
+            print(f"\n\tIndexes Dropped: {[index.index_id for index in indexes_dropped]}\n")
 
         # drop indexes that are no longer selected
         conn = create_connection()
@@ -446,16 +456,22 @@ class MAB:
             execution_info.append((execution_time, table_access_info, index_access_info))
             total_execution_time += execution_time
 
+
+
         if verbose:
             print(f"\tExecution Info:")
             for i, (query, info) in enumerate(zip(mini_workload, execution_info)):
-                print(f"\t\tQuery# {i+1} , Execution Time: {info[0]}, Table Access Info: {info[1]}, Index Access Info: {info[2]}, Bitmap Heap Scan Info: {bitmap_heapscan_info}")
+                #print(f"\t\tQuery# {i+1} , Execution Time: {info[0]}, Table Access Info: {info[1]}, Index Access Info: {info[2]}, Bitmap Heap Scan Info: {bitmap_heapscan_info}")
+                print(f"\t\tQuery# {i+1} , Execution Time: {info[0]}, Tables Accessed: {list(info[1].keys())}, Indexes Accessed: {list(info[2].keys())}, Bitmap Heap Scans : {list(bitmap_heapscan_info.keys())}")
 
         # extract index scan times and table sequential scan times from the execution info and shape index reward
         index_reward = {}
         for (execution_time, table_access_info, index_access_info) in execution_info:
             for table_name, table_info in table_access_info.items():
                 self.table_scan_times[table_name].append(table_info["actual_total_time"])
+
+            if selected_indexes is None:
+                continue
 
             for index_id, index_info in index_access_info.items():
                 scan_type = index_info["scan_type"]
@@ -482,9 +498,9 @@ class MAB:
                 creation_time = self.current_round_index_creation_time.get(index_id, 0)
                 if verbose: 
                     if bitmap_heap_scan:
-                        print(f"\t\t\tAccumulating reward for index: {index_id}, table: {table_name}, scan type:{scan_type}, index scan time: {index_scan_time}, bitmap heap scan time: {bitmap_heap_scan_time}, gain: {gain}, creation time: {creation_time}")
+                        print(f"\t\t\tAccumulating reward for index: {index_id}, table: {table_name}, scan type:{scan_type}, index scan time: {index_scan_time} ms, bitmap heap scan time: {bitmap_heap_scan_time} ms, gain: {gain}, creation time: {creation_time} ms")
                     else:
-                        print(f"\t\t\tAccumulating reward for index: {index_id}, table: {table_name}, scan type:{scan_type}, index scan time: {index_scan_time}, gain: {gain}, creation time: {creation_time}")
+                        print(f"\t\t\tAccumulating reward for index: {index_id}, table: {table_name}, scan type:{scan_type} ms, index scan time: {index_scan_time} ms, gain: {gain}, creation time: {creation_time} ms")
                 
                 # save gain and creation cost as separate components, accumulated gain over multiple uses
                 if index_id in index_reward:
@@ -492,6 +508,8 @@ class MAB:
                 else:
                     index_reward[index_id] = (gain, -creation_time)    
 
+        if selected_indexes is None:
+            return None, total_execution_time
 
         # for indexes that were selected on this round but not used, set gain to 0
         unused_indexes = set(selected_indexes.keys()) - set(index_reward.keys())
@@ -508,6 +526,9 @@ class MAB:
 
     # update the LinUCB model parameters
     def update_parameters(self, candidate_indexes, index_reward, context_vectors, verbose):
+        if len(candidate_indexes) == 0:
+            return
+
         for i, (index_id, index) in enumerate(candidate_indexes.items()):
             if index.index_id in index_reward:
                 reward = index_reward[index.index_id]
