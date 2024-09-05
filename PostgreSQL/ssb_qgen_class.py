@@ -274,7 +274,11 @@ class QGEN:
                 WHERE lo_linenumber >= {linenumber_low} AND lo_linenumber <= {linenumber_high}
                 AND lo_quantity = {quantity};
             """, 
-
+            16: """
+                SELECT lo_linenumber, lo_extendedprice  
+                FROM lineorder
+                WHERE lo_extendedprice = {extendedprice};
+            """,
             }
         
         self.predicates = {1: {"lineorder": ["lo_orderdate", "lo_discount", "lo_quantity"], "dwdate": ["d_datekey", "d_year"]},
@@ -306,8 +310,8 @@ class QGEN:
                    "dwdate": ["d_year", "d_datekey"], "customer": ["c_custkey", "c_nation"],
                    "part": ["p_partkey", "p_mfgr", "p_category"], "supplier": ["s_suppkey", "s_nation"]},
               14: {"lineorder": ["lo_linenumber", "lo_quantity"]},  
-              
               15: {"lineorder": ["lo_linenumber", "lo_quantity"]},  
+              16: {"lineorder": ["lo_extendedprice"]},
               }
 
         self.payloads = {1: {"lineorder": ["lo_extendedprice", "lo_discount"]},
@@ -327,7 +331,8 @@ class QGEN:
                         "supplier": ["s_city"]},
                     14: {"lineorder": ["lo_linenumber", "lo_quantity"]},  
                     
-                    15: {"lineorder": ["lo_linenumber", "lo_quantity", "lo_orderdate"]},  
+                    15: {"lineorder": ["lo_linenumber", "lo_quantity", "lo_orderdate"]}, 
+                    16: {"lineorder": ["lo_extendedprice", "lo_linenumber"]}, 
                     }
 
         self.order_bys = {1: {},
@@ -345,6 +350,7 @@ class QGEN:
                     13: {"dwdate": ["d_year"], "part": ["p_brand"], "supplier": ["s_city"]},
                     14: {},
                     15: {},
+                    16: {},
                     }
 
         self.group_bys = {1: {},
@@ -362,6 +368,7 @@ class QGEN:
                     13: {"part": ["p_brand"], "supplier": ["s_city"], "dwdate": ["d_year"]},
                     14: {},
                     15: {},
+                    16: {},
         }
 
 
@@ -556,6 +563,14 @@ class QGEN:
             quantity = random.randint(quantity_stats['min'], quantity_stats['max'])
 
             query = template.format(linenumber_low=linenumber_low, linenumber_high=linenumber_high, quantity=quantity) 
+
+        elif template_num == 16:
+            extendedprice_stats = self.stats['lineorder']['lo_extendedprice']
+
+            extendedprice = random.randint(extendedprice_stats['min'], extendedprice_stats['max'])
+
+            query = template.format(extendedprice=extendedprice)
+            
 
         # create Query object
         query = Query(template_num, query, self.payloads[template_num], self.predicates[template_num], self.order_bys[template_num], self.group_bys[template_num])
