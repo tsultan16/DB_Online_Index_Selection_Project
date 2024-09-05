@@ -39,15 +39,14 @@ def main():
     print(f"Num rounds: {workload_metadata['num_rounds']}")
     print(f"Template sequence: {workload_metadata['template_sequence']}")
 
-    # specify initial state
-    S_0 = []
     # instantiate WFIT
     #wfit = WFIT(S_0, max_key_columns=3, include_cols=False, max_indexes_per_table=3, max_U=None, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=200, normalize_doi=False, idxCnt=50, stateCnt=500, rand_cnt=100, execution_cost_scaling=1e-6,creation_cost_fudge_factor=1e-4) 
     
     #wfit = WFIT(S_0, max_key_columns=3, include_cols=False, max_indexes_per_table=5, max_U=None, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=200, normalize_doi=False, idxCnt=30, stateCnt=500, rand_cnt=200, execution_cost_scaling=1e-6,creation_cost_fudge_factor=2.5e-3) 
     
     if batch_processing in [1, 2]:
-        wfit = WFIT(S_0, max_key_columns=4, include_cols=True, max_indexes_per_table=5, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=200, normalize_doi=False, idxCnt=30, stateCnt=500, rand_cnt=200, execution_cost_scaling=1e-6,creation_cost_fudge_factor=2e-3) 
+        #wfit = WFIT(max_key_columns=3, include_cols=True, max_indexes_per_table=5, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=200, normalize_doi=False, idxCnt=30, stateCnt=500, rand_cnt=200, execution_cost_scaling=1e-6,creation_cost_fudge_factor=2e-3) 
+        wfit = WFIT(max_key_columns=3, include_cols=True, max_indexes_per_table=5, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=200, normalize_doi=False, idxCnt=30, stateCnt=500, rand_cnt=200, execution_cost_scaling=1e-6,creation_cost_fudge_factor=1.25e-3) 
 
 
     # process the workload
@@ -62,7 +61,7 @@ def main():
             print('------------------------------------------------------------------')
             print(f"Processing batch ({i+1}/{n})...")
             print('------------------------------------------------------------------')
-            wfit.process_WFIT_batch(workload[i], restart_server=True, clear_cache=True, remove_stale_U=True, verbose=True)
+            wfit.process_WFIT_batch(workload[i], restart_server=True, clear_cache=True, remove_stale_U=True, materialize=True, execute=True, verbose=True)
             print("\n\n")
 
     elif batch_processing == 2:    
