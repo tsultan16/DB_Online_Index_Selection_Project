@@ -10,7 +10,7 @@ import subprocess
 
 
 # restart the PostgreSQL server and clear OS cache
-def restart_postgresql(clear_cache=False, delay=2):
+def restart_postgresql(clear_cache=True, delay=1):
 
     # Path to the shell script
     script_path = '/home/tanzid/Code/Postgres/postgres/restart_cache.sh'
