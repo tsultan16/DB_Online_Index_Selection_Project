@@ -342,7 +342,7 @@ class MAB:
     # select best configuration/super-arm using C^2 LinUCB
     def select_best_configuration(self, context_vectors, candidate_indexes, verbose):
         if len(candidate_indexes) == 0:
-            return None
+            return {}
         
         # compute linUCB parameters
         V_inv = np.linalg.inv(self.V)
@@ -409,8 +409,6 @@ class MAB:
 
     # materialize the selected indexes
     def materialize_indexes(self, selected_indexes, verbose):
-        if selected_indexes is None:
-            return 0    
 
         indexes_added = [index for index in selected_indexes.values() if index.index_id not in self.selected_indexes_last_round]
         indexes_dropped = [index for index in self.selected_indexes_last_round.values() if index.index_id not in selected_indexes]
@@ -470,7 +468,7 @@ class MAB:
             for table_name, table_info in table_access_info.items():
                 self.table_scan_times[table_name].append(table_info["actual_total_time"])
 
-            if selected_indexes is None:
+            if len(selected_indexes) == 0:
                 continue
 
             for index_id, index_info in index_access_info.items():
@@ -508,7 +506,7 @@ class MAB:
                 else:
                     index_reward[index_id] = (gain, -creation_time)    
 
-        if selected_indexes is None:
+        if len(selected_indexes) == 0:
             return None, total_execution_time
 
         # for indexes that were selected on this round but not used, set gain to 0
