@@ -877,11 +877,27 @@ class WFIT:
         indexes_no_data = []
         for index_id in self.U:
             # compute average benefit of the index from all stats
+            """
             if len(self.idxStats[index_id]) > 0:
                 avg_benefit[index_id] = sum([stat[1] for stat in self.idxStats[index_id]]) / len(self.idxStats[index_id])
             else:
                 avg_benefit[index_id] = 0
                 indexes_no_data.append(index_id)
+            """
+            if len(self.idxStats[index_id]) == 0:
+                # zero current benefit if no statistics are available
+                avg_benefit[index_id] = 0
+            else:
+                # take the maximum over all incremental average benefits (optimistic estimate)
+                current_benefit = 0
+                b_total = 0
+                for (n, b) in self.idxStats[index_id]:
+                    b_total += b 
+                    # incremental average benefit of index up to query n (higher weight/smaller denominator for more recent queries)
+                    benefit = b_total / (self.n_pos - n + 1)
+                    current_benefit = max(current_benefit, benefit)
+                avg_benefit[index_id] = current_benefit
+
 
         # sort indexes by average benefit
         sorted_indexes = sorted(avg_benefit, key=avg_benefit.get, reverse=True)
