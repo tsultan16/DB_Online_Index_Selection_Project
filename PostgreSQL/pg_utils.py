@@ -647,9 +647,9 @@ def bulk_unhide_indexes(conn, index_objects):
             print(f"Index '{index.index_id}' has no OID (not materialized yet). Skipping...")
 
 
+"""
 # find index scans in the query plan
 def find_index_scans(plan):
-    """Iterative search for index scan operations and extracts index names."""
     indexes = list()  # Use a set to store unique index names
     nodes_to_visit = [plan]  # Initialize the stack with the root plan node
 
@@ -666,7 +666,7 @@ def find_index_scans(plan):
         nodes_to_visit.extend(current_node.get('Plans', []))
 
     return indexes
-
+"""
 
 # extract information about all access methods used in the query plan
 def extract_access_info(plan):
@@ -688,7 +688,7 @@ def extract_access_info(plan):
                 total_cost = current_node.get('Total Cost')
                 actual_rows = current_node.get('Actual Rows')
                 actual_startup_time = current_node.get('Actual Startup Time')
-                actual_total_time = current_node.get('Actual Total Time')  
+                actual_total_time = current_node.get('Actual Total Time') * current_node.get('Actual Loops', 1)
                 table_name = current_node.get('Relation Name')      
                 shared_hit_blocks = current_node.get('Shared Hit Blocks')
                 shared_read_blocks = current_node.get('Shared Read Blocks')
@@ -703,7 +703,7 @@ def extract_access_info(plan):
                 scan_type = current_node.get('Node Type')
                 actual_rows = current_node.get('Actual Rows')
                 actual_startup_time = current_node.get('Actual Startup Time')
-                actual_total_time = current_node.get('Actual Total Time')  
+                actual_total_time = current_node.get('Actual Total Time') * current_node.get('Actual Loops', 1)
                 table_name = current_node.get('Relation Name')      
                 shared_hit_blocks = current_node.get('Shared Hit Blocks')
                 shared_read_blocks = current_node.get('Shared Read Blocks')
@@ -719,7 +719,7 @@ def extract_access_info(plan):
                 total_cost = current_node.get('Total Cost')
                 actual_rows = current_node.get('Actual Rows')
                 actual_startup_time = current_node.get('Actual Startup Time')
-                actual_total_time = current_node.get('Actual Total Time')
+                actual_total_time = current_node.get('Actual Total Time') * current_node.get('Actual Loops', 1)
                 shared_hit_blocks = current_node.get('Shared Hit Blocks')
                 shared_read_blocks = current_node.get('Shared Read Blocks')
                 local_hit_blocks = current_node.get('Local Hit Blocks')
