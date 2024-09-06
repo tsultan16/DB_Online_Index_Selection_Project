@@ -1418,7 +1418,7 @@ class WFIT:
 
 
     # choose top num_indexes indexes from X with highest potential benefit
-    def top_indexes(self, N_workload, X, num_indexes, verbose):
+    def top_indexes(self, N_workload, X, num_indexes, verbose, matching_prefix_length=1):
         #if verbose:
         #    print(f"Non-materialized candidate indexes, X = {[index.index_id for index in X]}")
 
@@ -1474,7 +1474,26 @@ class WFIT:
         top_indexes_keep = defaultdict(list)
         for table in top_indexes_table:
             num_keep = self.MAX_INDEXES_PER_TABLE - len(materialized_indexes_table[table])
-            top_indexes_keep[table] = top_indexes_table[table][:num_keep]
+            # add top indexes for the table one by one
+            for index in top_indexes_table[table][:num_keep]:
+                if len(top_indexes_keep[table]) == 0:
+                    top_indexes_keep[table].append(index)
+                    continue
+
+                # don't add index if it has a matching prefix with any of the already added indexes 
+                if len(index.index_columns) <= matching_prefix_length:
+                    top_indexes_keep[table].append(index)
+                    continue
+
+                found_matching_prefix = False
+                for chosen_index in top_indexes_keep[table]:
+                    if index.index_columns[:matching_prefix_length] == chosen_index.index_columns[:matching_prefix_length]:
+                        found_matching_prefix = True
+                        break
+
+                if not found_matching_prefix:
+                    top_indexes_keep[table].append(index)
+                    break
 
         top_indexes = {index.index_id: index for indexes in top_indexes_keep.values() for index in indexes}        
 
