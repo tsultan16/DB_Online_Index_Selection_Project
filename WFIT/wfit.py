@@ -902,23 +902,6 @@ class WFIT:
         # sort indexes by average benefit
         sorted_indexes = sorted(avg_benefit, key=avg_benefit.get, reverse=True)
 
-        """        
-        # mark all indexes with zero benefit and not in M and S_0 as stale
-        stale_indexes = set()
-        for index_id in sorted_indexes:
-            if avg_benefit[index_id] == 0 and index_id not in self.M and index_id not in self.S_0:
-                stale_indexes.add(index_id)
-
-        # remove stale indexes from U
-        print(f"Number of indexes in U: {len(self.U)}")
-        num_removed = 0
-        for index_id in stale_indexes:
-            #if verbose: print(f"Removing stale index: {index_id}")
-            del self.U[index_id]
-            #if verbose: print(f"Number of indexes in U after removal: {len(self.U)}")
-            num_removed += 1
-        """
-
         # keep at most self.max_U of highest benefit indexes in U, make sure to keep all indexes in S_0, M, stable partitions and indexes for which we have no stats
         # (on certain rounds we may have a lot of indexes with no stats, so those rounds will be slower)
         print(f"Number of indexes in U: {len(self.U)}")
@@ -1516,9 +1499,10 @@ class WFIT:
         top_indexes_keep = defaultdict(list)
         for table in top_indexes_table:
             num_keep = self.MAX_INDEXES_PER_TABLE - len(materialized_indexes_table[table])
+            #print(f"Table: {table}, Num keep: {num_keep}")
             # add top indexes for the table one by one
             for index in top_indexes_table[table]:
-                if num_keep == 0:
+                if num_keep <= 0:
                     break
 
                 if len(top_indexes_keep[table]) == 0:
@@ -1541,7 +1525,14 @@ class WFIT:
                 if not found_matching_prefix:
                     top_indexes_keep[table].append(index)
                     num_keep -= 1
-                    break
+                    continue
+
+            # print(f"\nSelected indexes for table: {table}: {[index.index_id for index in top_indexes_keep[table]]}")    
+
+        # make sure the number of selected indexes per table is at most MAX_INDEXES_PER_TABLE
+        for table in top_indexes_keep:
+            if len(top_indexes_keep[table]) > self.MAX_INDEXES_PER_TABLE:
+                raise ValueError(f"Error: Number of selected indexes for table {table} exceeds the maximum limit. Aborting WFIT...")
 
         top_indexes = {index.index_id: index for indexes in top_indexes_keep.values() for index in indexes}        
 
