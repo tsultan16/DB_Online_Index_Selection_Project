@@ -562,7 +562,7 @@ class MAB:
             conn = create_connection()
             execution_time, results_rows, table_access_info, index_access_info, bitmap_heapscan_info = execute_query(conn, query.query_string, with_explain=True,  return_access_info=True, print_results=False)
             close_connection(conn)
-            execution_info.append((execution_time, table_access_info, index_access_info))
+            execution_info.append((execution_time, table_access_info, index_access_info, bitmap_heapscan_info))
             total_execution_time += execution_time
 
 
@@ -570,12 +570,15 @@ class MAB:
         if verbose:
             print(f"\nExecution Info:")
             for i, (query, info) in enumerate(zip(mini_workload, execution_info)):
-                #print(f"\t\tQuery# {i+1} , Execution Time: {info[0]}, Table Access Info: {info[1]}, Index Access Info: {info[2]}, Bitmap Heap Scan Info: {bitmap_heapscan_info}")
-                print(f"\nQuery# {i+1} , Execution Time: {info[0]}, Tables Accessed: {list(info[1].keys())}, Indexes Accessed: {list(info[2].keys())}, Bitmap Heap Scans : {list(bitmap_heapscan_info.keys())}")
+                print(f"\n\t\tQuery# {i+1} , Execution Time: {info[0]}")
+                print(f"\t\tTable Access Info: {info[1]}")
+                print(f"\t\tIndex Access Info: {info[2]}")
+                print(f"\t\tBitmap Heap Scan Info: {info[3]}")
+                #print(f"\nQuery# {i+1} , Execution Time: {info[0]}, Tables Accessed: {list(info[1].keys())}, Indexes Accessed: {list(info[2].keys())}, Bitmap Heap Scans : {list(bitmap_heapscan_info.keys())}")
 
         # extract index scan times and table sequential scan times from the execution info and shape index reward
         index_reward = {}
-        for (execution_time, table_access_info, index_access_info) in execution_info:
+        for (execution_time, table_access_info, index_access_info, bitmap_heapscan_info) in execution_info:
             for table_name, table_info in table_access_info.items():
                 self.table_scan_times[table_name].append(table_info["actual_total_time"])
 
