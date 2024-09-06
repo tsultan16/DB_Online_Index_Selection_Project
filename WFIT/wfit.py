@@ -1470,7 +1470,8 @@ class WFIT:
         for index in self.M.values():
             materialized_indexes_table[index.table_name].append(index)
 
-        # keep top indexes for each table, at most MAX_INDEXES_PER_TABLE top indexes and already materialized indexes combined per table
+        # select top indexes for each table, at most MAX_INDEXES_PER_TABLE top indexes and already materialized indexes combined per table
+        """        
         top_indexes_keep = defaultdict(list)
         for table in top_indexes_table:
             num_keep = self.MAX_INDEXES_PER_TABLE - len(materialized_indexes_table[table])
@@ -1480,13 +1481,13 @@ class WFIT:
                     top_indexes_keep[table].append(index)
                     continue
 
-                # don't add index if it has a matching prefix with any of the already added indexes 
+                # don't add index if it has a matching prefix with any of the already selected or materialized indexes 
                 if len(index.index_columns) <= matching_prefix_length:
                     top_indexes_keep[table].append(index)
                     continue
 
                 found_matching_prefix = False
-                for chosen_index in top_indexes_keep[table]:
+                for chosen_index in (top_indexes_keep[table] + materialized_indexes_table[table]):
                     if index.index_columns[:matching_prefix_length] == chosen_index.index_columns[:matching_prefix_length]:
                         found_matching_prefix = True
                         break
@@ -1494,36 +1495,39 @@ class WFIT:
                 if not found_matching_prefix:
                     top_indexes_keep[table].append(index)
                     break
+        """
+
+        top_indexes_keep = defaultdict(list)
+        for table in top_indexes_table:
+            num_keep = self.MAX_INDEXES_PER_TABLE - len(materialized_indexes_table[table])
+            # add top indexes for the table one by one
+            for index in top_indexes_table[table]:
+                if num_keep == 0:
+                    break
+
+                if len(top_indexes_keep[table]) == 0:
+                    top_indexes_keep[table].append(index)
+                    num_keep -= 1
+                    continue
+
+                # don't add index if it has a matching prefix with any of the already selected or materialized indexes 
+                if len(index.index_columns) <= matching_prefix_length:
+                    top_indexes_keep[table].append(index)
+                    num_keep -= 1
+                    continue
+
+                found_matching_prefix = False
+                for chosen_index in (top_indexes_keep[table] + materialized_indexes_table[table]):
+                    if index.index_columns[:matching_prefix_length] == chosen_index.index_columns[:matching_prefix_length]:
+                        found_matching_prefix = True
+                        break
+
+                if not found_matching_prefix:
+                    top_indexes_keep[table].append(index)
+                    num_keep -= 1
+                    break
 
         top_indexes = {index.index_id: index for indexes in top_indexes_keep.values() for index in indexes}        
-
-        ########################################################################################################################
-
-        """ 
-        # for each table, keep at most MAX_INDEXES_PER_TABLE indexes
-        table_indexes = defaultdict(list)
-        for index in top_indexes.values():
-            table_indexes[index.table_name].append(index)
-        for table in table_indexes:
-            table_indexes[table] = sorted(table_indexes[table], key=lambda x: score[x.index_id], reverse=True)[:self.MAX_INDEXES_PER_TABLE]
-
-        top_indexes = {index.index_id: index for indexes in table_indexes.values() for index in indexes}
-        
-        # if there are more than num_indexes indexe in top_indexes, then shave off the excess indexes
-        if len(top_indexes) > num_indexes:
-            top_indexes = list(top_indexes.values())
-            random.shuffle(top_indexes)
-            top_indexes = {index.index_id: index for index in top_indexes[:num_indexes]}    
-        """
-        
-        # if there are less than num_indexes indexes in top_indexes, then add indexes from the sorted top_indexes list to make up the difference
-        #if len(top_indexes) < num_indexes:
-        #    for index in sorted(score, key=lambda x: score[x], reverse=True):
-        #        if index not in top_indexes:
-        #            top_indexes[index] = self.U[index]
-        #        if len(top_indexes) == num_indexes:
-        #            break    
-        
 
         if verbose:
             print(f"{len(top_indexes)} Top index scores:")
