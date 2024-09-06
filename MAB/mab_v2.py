@@ -5,6 +5,7 @@
 
 import sys
 import os
+import operator
 
 # Add Postgres directory to sys.path
 module_path = os.path.abspath('/home/tanzid/Code/DBMS/PostgreSQL')
@@ -54,6 +55,12 @@ class MAB:
         self.config_memory_MB = config_memory_MB  # memory budget for storing indexes
         self.qoi_memory = qoi_memory  # how far back to look for queries of interest (QoIs)
 
+        # drop all existing indexes
+        print("Dropping all existing secondary indexes...")
+        conn = create_connection()
+        drop_all_indexes(conn)
+        close_connection(conn)
+
         # get database size
         if MAB.database_size_cache is None:
             conn = create_connection()
@@ -73,12 +80,6 @@ class MAB:
         self.num_columns = sum([len(columns) for columns in self.all_columns.values()])
         print(f"Table info: {self.tables}")
         print(f"Total number of columns: {self.num_columns}")
-
-        # drop all existing indexes
-        print("Dropping all existing secondary indexes...")
-        conn = create_connection()
-        drop_all_indexes(conn)
-        close_connection(conn)
 
         # context vector dims  
         self.context_size = self.num_columns + self.num_columns + 2  # index_columns + include_columns + derived_context
@@ -117,12 +118,14 @@ class MAB:
         self.index_size = {}
         self.index_usage_rounds = defaultdict(list) # tracks which rounds an index was used in and the scan time
         self.index_selected_rounds = defaultdict(list) # tracks which rounds an index was selected in
+        self.index_query_templates = defaultdict(set) # tracks which query templates an index was extracted from
         self.table_scan_times = {}
         for table_name in self.tables.keys():
             self.table_scan_times[table_name] = self.tables[table_name]["sequential_scan_time"]
         # keep copy of indexes selected in previous round and current round candidates
         self.selected_indexes_last_round = {}
         self.candidate_indexes = {}
+        self.indexes_currently_materialized = {}
  
         # track materialization time of indexes for current round
         self.current_round_index_creation_time = {}
@@ -192,13 +195,15 @@ class MAB:
         # update selected indexes for next round
         self.selected_indexes_last_round = selected_indexes
 
-        print(f"\nRound {self.current_round} completed! Recommendation time: {rec_time:.2f} ms, Materialization time: {mat_time:.2f} ms, Execution time: {exec_time:.2f} ms")
-        print(f"\nIndex usage stats:")
-        for index_id, usage_rounds in self.index_usage_rounds.items():
-            print(f"\tIndex ID: {index_id}, Usage Count: {len(usage_rounds)}")
-        print(f"\nMax table scan times:")
-        for table_name, scan_times in self.table_scan_times.items():
-            print(f"\tTable: {table_name}, Max Scan Time: {max(scan_times)} ms")    
+        if verbose:
+            print(f"\nRound {self.current_round} completed! Recommendation time: {rec_time:.2f} ms, Materialization time: {mat_time:.2f} ms, Execution time: {exec_time:.2f} ms")
+            print(f"\nIndex usage stats:")
+            for index_id, usage_rounds in self.index_usage_rounds.items():
+                print(f"\tIndex ID: {index_id}, Usage Count: {len(usage_rounds)}")
+            print(f"\nMax table scan times:")
+            for table_name, scan_times in self.table_scan_times.items():
+                print(f"\tTable: {table_name}, Max Scan Time: {max(scan_times)} ms")    
+            print(f"\nIndexes currently materialized: {list(self.indexes_currently_materialized.keys())}")
 
 
     # identify new query templates from the mini workload and update stats
@@ -249,6 +254,9 @@ class MAB:
             for index in indexes:
                 if index not in candidate_indexes:
                     candidate_indexes[index.index_id] = index
+                # update index query template stats
+                if query_object.template_id not in self.index_query_templates[index.index_id]:
+                    self.index_query_templates[index.index_id].add(query_object.template_id)    
 
         # get hypothetical sizes of all new candidate indexes not in the cache
         new_indexes = [index for index in candidate_indexes.values() if index.index_id not in self.index_size]
@@ -344,22 +352,30 @@ class MAB:
         if len(candidate_indexes) == 0:
             return {}
         
-        # compute linUCB parameters
-        V_inv = np.linalg.inv(self.V)
-        theta = V_inv @ self.b
-        # rescale the weight corresponding to second component of the derived context vector, i.e. creation cost
-        # (this is useful for reducing the impact of creation cost on the selection process)
-        theta[1] = theta[1]/self.creation_time_reduction_factor
-        # compute expected rewards
-        expected_rewards = (context_vectors @ theta).reshape(-1)
-        # estimate upper confidence bound/variance
-        variances = self.alpha * np.sqrt(np.diag(context_vectors @ V_inv @ context_vectors.T))
-        # compute upper bounds
-        upper_bounds = expected_rewards + variances
-        # convert to dict
-        upper_bounds = {index_id: upper_bound for index_id, upper_bound in zip(candidate_indexes.keys(), upper_bounds)}
+        if self.current_round > 2:
+            # compute linUCB parameters
+            V_inv = np.linalg.inv(self.V)
+            theta = V_inv @ self.b
+            # rescale the weight corresponding to second component of the derived context vector, i.e. creation cost
+            # (this is useful for reducing the impact of creation cost on the selection process)
+            theta[1] = theta[1]/self.creation_time_reduction_factor
+            # compute expected rewards
+            expected_rewards = (context_vectors @ theta).reshape(-1)
+            # estimate upper confidence bound/variance
+            variances = self.alpha * np.sqrt(np.diag(context_vectors @ V_inv @ context_vectors.T))
+            # compute upper bounds
+            upper_bounds = expected_rewards + variances
+            # convert to dict
+            upper_bounds = {index_id: upper_bound for index_id, upper_bound in zip(candidate_indexes.keys(), upper_bounds)}
+        else:
+            # if current round is less than 2, then assign uniform ucb values
+            shuffled_indexes = list(candidate_indexes.keys())
+            np.random.shuffle(shuffled_indexes)
+            upper_bounds = {index_id:1 for index_id in shuffled_indexes}
+
         # solve 0-1 knapsack problem to select best configuration
-        selected_indexes = self.solve_knapsack(upper_bounds, candidate_indexes)
+        #selected_indexes = self.solve_knapsack(upper_bounds, candidate_indexes)
+        selected_indexes = self.submodular_oracle(upper_bounds, candidate_indexes, verbose)
         # convert to dict
         selected_indexes = {index.index_id: index for index in selected_indexes}
         # decay alpha
@@ -370,17 +386,106 @@ class MAB:
 
         if verbose:
             # sort indexes by decreasing order of upper bound
-            sorted_indexes = sorted(upper_bounds, key=upper_bounds.get, reverse=True)
-            print(f"\n\tUpper Bounds:")
-            for index_id in sorted_indexes:
-                print(f"\t\tIndex ID: {index_id}, Upper Bound: {upper_bounds[index_id]}")
+            #sorted_indexes = sorted(upper_bounds, key=upper_bounds.get, reverse=True)
+            #print(f"\n\tUpper Bounds:")
+            #for index_id in sorted_indexes:
+            #    print(f"\t\tIndex ID: {index_id}, Upper Bound: {upper_bounds[index_id]}")
 
+            sorted_selected_indexes = {k: v for k, v in sorted(selected_indexes.items(), key=lambda item: upper_bounds[item[0]], reverse=True)}
+            # create dict mapping selected index id to upper bound, in sorted order of decreasing upper bound  
+            sorted_indexes = {index_id: upper_bounds[index_id] for index_id in sorted_selected_indexes}
             print(f"\n\tSelected Indexes:")
-            print(f"\t\t{list(selected_indexes.keys())}")    
+            print(f"\t\t{list(sorted_indexes.items())}")    
 
         return selected_indexes
 
 
+    # submodular maximization oracle for obtaining knapsack problem approximate solution
+    def submodular_oracle(self, upper_bounds, candidate_indexes, verbose, low_reward_threshold=0):
+        used_memory = 0
+        chosen_arms = []
+        arm_ucb_dict = {}
+        table_count = {}
+
+        # remove arms with low rewards
+        arm_ucb_dict = {index_id:ucb for index_id, ucb in upper_bounds.items() if ucb > low_reward_threshold}
+
+        while len(arm_ucb_dict) > 0:
+            # select the arm with the highest UCB if it fits within memory budget
+            max_ucb_arm_id = max(arm_ucb_dict.items(), key=operator.itemgetter(1))[0]
+            if self.index_size[max_ucb_arm_id] < self.config_memory_MB - used_memory:
+                chosen_arms.append(candidate_indexes[max_ucb_arm_id])
+                used_memory += self.index_size[max_ucb_arm_id]
+                if candidate_indexes[max_ucb_arm_id].table_name in table_count:
+                    table_count[candidate_indexes[max_ucb_arm_id].table_name] += 1
+                else:
+                    table_count[candidate_indexes[max_ucb_arm_id].table_name] = 1
+
+                # filter out arms that are dominated by the chosen arm
+                arm_ucb_dict = self.filter_arms(arm_ucb_dict, max_ucb_arm_id, candidate_indexes, table_count, used_memory)
+            else:
+                # remove arm from consideration if it exceeds memory budget
+                arm_ucb_dict.pop(max_ucb_arm_id)
+
+        if verbose: print(f"\nMax memory budget: {self.config_memory_MB} MB, Used memory: {used_memory} MB")
+
+        return chosen_arms
+    
+
+    def filter_arms(self, arm_ucb_dict, chosen_id, candidate_indexes, table_count, used_memory, prefix_length=1):
+        remaining_memory = self.config_memory_MB - used_memory
+
+        # keep at most self.MAX_INDEXES_PER_TABLE indexes per table
+        reduced_arm_ucb_dict = {}
+        for index_id in arm_ucb_dict:
+            if not (candidate_indexes[index_id].table_name == candidate_indexes[chosen_id].table_name and table_count[candidate_indexes[index_id].table_name] >= self.MAX_INDEXES_PER_TABLE):
+                reduced_arm_ucb_dict[index_id] = arm_ucb_dict[index_id]
+        arm_ucb_dict = reduced_arm_ucb_dict
+
+        # remove arms that are part of the same cluster to improve diversity
+        reduced_arm_ucb_dict = {}
+        for index_id in arm_ucb_dict:
+            if not (candidate_indexes[index_id].table_name == candidate_indexes[chosen_id].table_name and candidate_indexes[chosen_id].cluster is not None
+                    and candidate_indexes[index_id].cluster == candidate_indexes[chosen_id].cluster):
+                reduced_arm_ucb_dict[index_id] = arm_ucb_dict[index_id]
+        arm_ucb_dict = reduced_arm_ucb_dict        
+                
+        # remove arms whose associated query templates have been covered by already selected arms
+        reduced_arm_ucb_dict = {}
+        for index_id in arm_ucb_dict:
+            # get the query templates associated with the chosen arm
+            query_template_ids = self.index_query_templates[chosen_id]
+            for query_template_id in query_template_ids:
+                if (candidate_indexes[index_id].table_name == candidate_indexes[chosen_id].table_name and 
+                    candidate_indexes[chosen_id].is_include and query_template_id in self.index_query_templates[index_id]):
+                    # if query template is covered by the chosen arm, then remove that template from the other arm
+                    self.index_query_templates[index_id].remove(query_template_id)     
+
+            # if there are still remaining query templates covered by this arm, then keep it
+            if self.index_query_templates[index_id] != set():
+                reduced_arm_ucb_dict[index_id] = arm_ucb_dict[index_id]
+        arm_ucb_dict = reduced_arm_ucb_dict        
+
+        # remove arms that exceed the remaining memory budget
+        arm_ucb_dict = {index_id: index for index_id, index in arm_ucb_dict.items() if self.index_size[index_id] <= remaining_memory}    
+
+        # remove arms with matching prefix up to a prefix_length
+        if len(candidate_indexes[chosen_id].index_columns) >= prefix_length:
+            recuced_arm_ucb_dict = {}
+            for index_id in arm_ucb_dict:
+                if (candidate_indexes[index_id].table_name == candidate_indexes[chosen_id].table_name and len(candidate_indexes[index_id].index_columns) > prefix_length):
+                    for i in range(prefix_length):
+                        if candidate_indexes[index_id].index_columns[i] != candidate_indexes[chosen_id].index_columns[i]:
+                            recuced_arm_ucb_dict[index_id] = arm_ucb_dict[index_id]
+                            break
+                else:
+                    recuced_arm_ucb_dict[index_id] = arm_ucb_dict[index_id]        
+            arm_ucb_dict = recuced_arm_ucb_dict    
+               
+        return arm_ucb_dict
+
+        
+        
     # greedy 1/2 approximation algorithm for knapsack problem
     def solve_knapsack(self, upper_bounds, candidate_indexes):
         # keep at most self.MAX_INDEXES_PER_TABLE indexes per table
@@ -412,6 +517,12 @@ class MAB:
 
         indexes_added = [index for index in selected_indexes.values() if index.index_id not in self.selected_indexes_last_round]
         indexes_dropped = [index for index in self.selected_indexes_last_round.values() if index.index_id not in selected_indexes]
+
+        for index in indexes_added:
+            self.indexes_currently_materialized[index.index_id] = index
+        for index in indexes_dropped:
+            self.indexes_currently_materialized.pop(index.index_id)
+
         if verbose:
             print(f"\n\tIndexes Added: {[index.index_id for index in indexes_added]}")
             print(f"\n\tIndexes Dropped: {[index.index_id for index in indexes_dropped]}\n")
@@ -446,7 +557,7 @@ class MAB:
             if restart_server:
                 # restart the server before each query execution
                 restart_postgresql()
-            if verbose: print(f"Executing query# {i+1}", end='\r', flush=True)
+            if verbose: print(f"\nExecuting query# {i+1}")
             # execute the query and observe the reward
             conn = create_connection()
             execution_time, results_rows, table_access_info, index_access_info, bitmap_heapscan_info = execute_query(conn, query.query_string, with_explain=True,  return_access_info=True, print_results=False)
@@ -457,10 +568,10 @@ class MAB:
 
 
         if verbose:
-            print(f"\tExecution Info:")
+            print(f"\nExecution Info:")
             for i, (query, info) in enumerate(zip(mini_workload, execution_info)):
                 #print(f"\t\tQuery# {i+1} , Execution Time: {info[0]}, Table Access Info: {info[1]}, Index Access Info: {info[2]}, Bitmap Heap Scan Info: {bitmap_heapscan_info}")
-                print(f"\t\tQuery# {i+1} , Execution Time: {info[0]}, Tables Accessed: {list(info[1].keys())}, Indexes Accessed: {list(info[2].keys())}, Bitmap Heap Scans : {list(bitmap_heapscan_info.keys())}")
+                print(f"\nQuery# {i+1} , Execution Time: {info[0]}, Tables Accessed: {list(info[1].keys())}, Indexes Accessed: {list(info[2].keys())}, Bitmap Heap Scans : {list(bitmap_heapscan_info.keys())}")
 
         # extract index scan times and table sequential scan times from the execution info and shape index reward
         index_reward = {}
@@ -468,7 +579,7 @@ class MAB:
             for table_name, table_info in table_access_info.items():
                 self.table_scan_times[table_name].append(table_info["actual_total_time"])
 
-            if len(selected_indexes) == 0:
+            if len(candidate_indexes) == 0:
                 continue
 
             for index_id, index_info in index_access_info.items():
@@ -506,7 +617,7 @@ class MAB:
                 else:
                     index_reward[index_id] = (gain, -creation_time)    
 
-        if len(selected_indexes) == 0:
+        if len(candidate_indexes) == 0:
             return None, total_execution_time
 
         # for indexes that were selected on this round but not used, set gain to 0
@@ -527,11 +638,11 @@ class MAB:
         if len(candidate_indexes) == 0:
             return
 
-        for i, (index_id, index) in enumerate(candidate_indexes.items()):
-            if index.index_id in index_reward:
-                reward = index_reward[index.index_id]
+        for i, index_id in enumerate(candidate_indexes.keys()):
+            if index_id in index_reward:
+                reward = index_reward[index_id]
                 # update moving average of index rewards
-                self.index_average_reward[index.index_id] = (self.index_average_reward[index.index_id] + reward[0])/2    
+                self.index_average_reward[index_id] = (self.index_average_reward[index_id] + reward[0])/2    
                 context_vector = context_vectors[i]
 
                 # update V and b for creation cost reward component
@@ -552,7 +663,6 @@ class MAB:
     # get total recommendation,  materialization and query execution times
     def get_total_times(self):
         return sum(self.recommendation_time), sum(self.materialization_time), sum(self.execution_time)
-
 
 
 """ 
