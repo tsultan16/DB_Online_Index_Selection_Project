@@ -57,8 +57,8 @@ def get_database_size(conn):
     cur = conn.cursor()
     try:
         # Query to get the size of the database in MB
-        cur.execute("SELECT pg_database_size(current_database()) / (1024 * 1024) AS size_mb")
-        database_size_mb = cur.fetchone()[0]
+        cur.execute("SELECT pg_database_size(current_database()) AS size_bytes")
+        database_size_mb = cur.fetchone()[0]/ (1024.0 * 1024.0)
 
     except Exception as e:
         print(f"An error occurred while getting the database size: {e}")
@@ -536,23 +536,16 @@ def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False):
 
         # Extract the total cost
         total_cost = plan_json[0]['Plan']['Total Cost']
- 
         # Check for index scan usage
-        table_access_info, index_access_info, bitmap_heapscan_info = extract_access_info(plan_json[0]['Plan'])
-        #print(f"Index Access Info: {index_access_info}")
+        indexes = find_index_scans(plan_json[0]['Plan'])
         indexes_used = []
-        if len(index_access_info)>0:
+        if len(indexes)>0:
             #print("Indexes used in the query plan:")
-            for index_name, index_info in index_access_info.items():
-                scan_type = index_info['scan_type']
-                scan_cost = index_info['total_cost']
-                #print(f"- {index_name}")
+            for index_name, scan_type, scan_cost in indexes:
                 # only consider hypothetical index scans
                 if '<' in index_name:
                     index_oid = int(index_name.split('<')[1].split('>')[0])
-                    indexes_used.append((index_oid, scan_type, scan_cost, 2)) # 2 for secondary indexes
-                else:
-                    indexes_used.append((index_name, scan_type, scan_cost, 1)) # 1 for primary clustered indexes      
+                    indexes_used.append((index_oid, scan_type, scan_cost))
 
         else:
             print("No index scans were explicitly noted in the query plan.")
@@ -647,7 +640,7 @@ def bulk_unhide_indexes(conn, index_objects):
             print(f"Index '{index.index_id}' has no OID (not materialized yet). Skipping...")
 
 
-"""
+
 # find index scans in the query plan
 def find_index_scans(plan):
     indexes = list()  # Use a set to store unique index names
@@ -666,7 +659,7 @@ def find_index_scans(plan):
         nodes_to_visit.extend(current_node.get('Plans', []))
 
     return indexes
-"""
+
 
 # extract information about all access methods used in the query plan
 def extract_access_info(plan):
