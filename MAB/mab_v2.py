@@ -356,7 +356,11 @@ class MAB:
         V_inv = np.linalg.inv(self.V) # shape = (context_size, context_size)
         theta = V_inv @ self.b # shape = (context_size, 1)
 
+        if verbose:
+            print(f"\nTheta: {theta.reshape(-1)}")
+
         upper_bounds = {}
+        estimated_creation_costs = {}
         for i, index_id in enumerate(candidate_indexes.keys()):
             context_vector = context_vectors[i].reshape(-1, 1) # shape = (context_size, 1)    
             # estimated creation cost
@@ -368,6 +372,7 @@ class MAB:
             # add in scaled creation cost
             ucb += creation_cost / self.creation_time_reduction_factor
             upper_bounds[index_id] = ucb
+            estimated_creation_costs[index_id] = creation_cost
 
         # solve 0-1 knapsack problem to select best configuration
         selected_indexes = self.solve_knapsack(upper_bounds, candidate_indexes, verbose)
@@ -386,9 +391,9 @@ class MAB:
             print(f"\n\tUpper Bounds:")
             i = 0
             for index_id in sorted_indexes:
-                print(f"\t\tIndex ID: {index_id}, Upper Bound: {upper_bounds[index_id]}")
+                print(f"\t\tIndex ID: {index_id}, Upper Bound: {upper_bounds[index_id]}, Estimated Creation Cost: {estimated_creation_costs[index_id]}")
                 i += 1
-                if i == 30:
+                if i == 80:
                     break
 
             sorted_selected_indexes = {k: v for k, v in sorted(selected_indexes.items(), key=lambda item: upper_bounds[item[0]], reverse=True)}
@@ -655,17 +660,17 @@ class MAB:
                 context_vector = context_vectors[i]
 
                 # update V and b for creation cost reward component
+                creation_reward_context = np.zeros_like(context_vector)
+                creation_reward_context[1] = context_vector[1]  
+                self.V += np.outer(creation_reward_context, creation_reward_context)   
                 if reward[1] != 0:
-                    creation_reward_context = np.zeros_like(context_vector)
-                    creation_reward_context[1] = context_vector[1]  
-                    self.V += np.outer(creation_reward_context, creation_reward_context)   
                     self.b += reward[1] * creation_reward_context.reshape(-1, 1)
 
                 # update V and b for gain reward component
+                context_vector[1] = 0
+                gain_reward_context = context_vector
+                self.V += np.outer(gain_reward_context, gain_reward_context)  
                 if reward[0] != 0:
-                    context_vector[1] = 0
-                    gain_reward_context = context_vector
-                    self.V += np.outer(gain_reward_context, gain_reward_context)  
                     self.b += reward[0] * gain_reward_context.reshape(-1, 1)
 
 
