@@ -266,6 +266,8 @@ class MAB:
             close_connection(conn)    
             for index_id, size in new_index_sizes.items():
                 self.index_size[index_id] = size
+                if size == 0.0:
+                    raise ValueError(f"Index size is 0 for index ID: {index_id}") 
 
         if verbose:
             print(f"\tExtracted {len(candidate_indexes)} candidate indexes from QoIs.")
@@ -360,19 +362,29 @@ class MAB:
             print(f"\nTheta: {theta.reshape(-1)}")
 
         upper_bounds = {}
-        estimated_creation_costs = {}
-        for i, index_id in enumerate(candidate_indexes.keys()):
-            context_vector = context_vectors[i].reshape(-1, 1) # shape = (context_size, 1)    
-            # estimated creation cost
-            creation_cost = np.ndarray.item(theta[1] * context_vector[1])
-            # estimate reward excluding creation cost
-            average_reward = np.ndarray.item(theta.T @ context_vector) - creation_cost
-            # compute ucb
-            ucb = average_reward + self.alpha * np.sqrt(np.ndarray.item(context_vector.T @ V_inv @ context_vector))
-            # add in scaled creation cost
-            ucb += creation_cost / self.creation_time_reduction_factor
-            upper_bounds[index_id] = ucb
-            estimated_creation_costs[index_id] = creation_cost
+        #estimated_creation_costs = {}
+        #context_components = {}
+        if self.current_round == 2:    
+            # assign uniform upper bounds for first round
+            shuffled_indexes = list(candidate_indexes.keys())
+            np.random.shuffle(shuffled_indexes)
+            upper_bounds = {index_id:1 for index_id in shuffled_indexes}
+
+        else:      
+            for i, index_id in enumerate(candidate_indexes.keys()):
+                context_vector = context_vectors[i].reshape(-1, 1) # shape = (context_size, 1)    
+                # estimated creation cost
+                creation_cost = np.ndarray.item(theta[1] * context_vector[1])
+                # estimate reward excluding creation cost
+                average_reward = np.ndarray.item(theta.T @ context_vector) - creation_cost
+                # compute ucb
+                ucb = average_reward + self.alpha * np.sqrt(np.ndarray.item(context_vector.T @ V_inv @ context_vector))
+                # add in scaled creation cost
+                ucb += creation_cost / self.creation_time_reduction_factor
+                upper_bounds[index_id] = ucb
+                #estimated_creation_costs[index_id] = creation_cost
+                #context_components[index_id] = context_vector[0:2].reshape(-1)
+                #print(f"\nIndex ID: {index_id}, Context: {context_vector[0:2]}, Estimated Creation Cost: {creation_cost}, Estimated Reward: {average_reward}, UCB: {ucb}")
 
         # solve 0-1 knapsack problem to select best configuration
         selected_indexes = self.solve_knapsack(upper_bounds, candidate_indexes, verbose)
@@ -388,12 +400,13 @@ class MAB:
         if verbose:
             # sort indexes by decreasing order of upper bound
             sorted_indexes = sorted(upper_bounds, key=upper_bounds.get, reverse=True)
-            print(f"\n\tUpper Bounds:")
+            print(f"\nUpper Bounds:")
             i = 0
             for index_id in sorted_indexes:
-                print(f"\t\tIndex ID: {index_id}, Upper Bound: {upper_bounds[index_id]}, Estimated Creation Cost: {estimated_creation_costs[index_id]}")
+                #print(f"\tIndex ID: {index_id}, Context:{context_components[index_id]}, Upper Bound: {upper_bounds[index_id]}, Estimated Creation Cost: {estimated_creation_costs[index_id]}")
+                print(f"\tIndex ID: {index_id}, Upper Bound: {upper_bounds[index_id]}")
                 i += 1
-                if i == 80:
+                if i == 50:
                     break
 
             sorted_selected_indexes = {k: v for k, v in sorted(selected_indexes.items(), key=lambda item: upper_bounds[item[0]], reverse=True)}
@@ -403,7 +416,6 @@ class MAB:
             print(f"\t\t{list(sorted_indexes.items())}")    
 
         return selected_indexes
-
 
 
 
@@ -492,14 +504,22 @@ class MAB:
         return arm_ucb_dict
 
         
-        
     # greedy 1/2 approximation algorithm for knapsack problem
-    def solve_knapsack(self, upper_bounds, candidate_indexes, verbose):
+    def solve_knapsack(self, upper_bounds, candidate_indexes, verbose, remove_negative_ucb=False, ignore_size=True):
         # keep at most self.MAX_INDEXES_PER_TABLE indexes per table
         table_index_counts = defaultdict(int)    
 
         # compute estimated reward upper bound to index size ratio
-        ratios = {index_id: upper_bound / self.index_size[index_id] for index_id, upper_bound in upper_bounds.items()}
+        if remove_negative_ucb:
+            if ignore_size:
+                ratios = {index_id: upper_bound for index_id, upper_bound in upper_bounds.items() if upper_bound >= 0}
+            else:
+                ratios = {index_id: upper_bound / self.index_size[index_id] for index_id, upper_bound in upper_bounds.items() if upper_bound >= 0}
+        else:
+            if ignore_size:
+                ratios = {index_id: upper_bound for index_id, upper_bound in upper_bounds.items()}
+            else:
+                ratios = {index_id: upper_bound / self.index_size[index_id] for index_id, upper_bound in upper_bounds.items()}  
         # sort indexes by decreasing order of ratio
         sorted_indexes = sorted(ratios, key=ratios.get, reverse=True)
         # select indexes greedily to fit within memory budget
@@ -663,15 +683,13 @@ class MAB:
                 creation_reward_context = np.zeros_like(context_vector)
                 creation_reward_context[1] = context_vector[1]  
                 self.V += np.outer(creation_reward_context, creation_reward_context)   
-                if reward[1] != 0:
-                    self.b += reward[1] * creation_reward_context.reshape(-1, 1)
+                self.b += reward[1] * creation_reward_context.reshape(-1, 1)
 
                 # update V and b for gain reward component
                 context_vector[1] = 0
                 gain_reward_context = context_vector
                 self.V += np.outer(gain_reward_context, gain_reward_context)  
-                if reward[0] != 0:
-                    self.b += reward[0] * gain_reward_context.reshape(-1, 1)
+                self.b += reward[0] * gain_reward_context.reshape(-1, 1)
 
 
     # get total recommendation,  materialization and query execution times
