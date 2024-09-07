@@ -136,12 +136,9 @@ class IBG:
         cost, indexes_used = get_query_cost_estimate_hypo_indexes(conn, self.q.query_string, show_plan=False)
         # map used index oids to index objects
         used = []
-        for oid, scan_type, scan_cost, index_category in indexes_used:
-            if index_category == 2:
+        for oid, scan_type, scan_cost in indexes_used:
                 used.append(oid2index[oid])
-            #else:
-            #    used.append(self.idx2index[oid])
-
+            
         # drop hypothetical indexes
         bulk_drop_hypothetical_indexes(conn)
         if self.conn is None:
