@@ -159,7 +159,7 @@ class MAB:
         # select queries of interest (QoIs) from past workload and use them to extract candidate indexes, i.e. bandit arms
         if verbose: print(f"\nSelecting QoIs and extracting candidate indexes...")
         QoIs = self.select_queries_of_interest(mini_workload, verbose)
-        self.candidate_indexes = self.extract_candidate_indexes(QoIs, False)
+        self.candidate_indexes = self.extract_candidate_indexes(QoIs, verbose)
 
         # generate context vectors for each candidate index
         if verbose: print(f"\nGenerating context vectors...")
@@ -268,9 +268,9 @@ class MAB:
                 self.index_size[index_id] = size
 
         if verbose:
-            print(f"\tCandidate Indexes:")
-            for index in candidate_indexes.values():
-                print(f"\t\tIndex ID: {index.index_id}, Index Columns: {index.index_columns}, Include Columns: {index.include_columns}, Size: {self.index_size[index.index_id]} Mb")            
+            print(f"\tExtracted {len(candidate_indexes)} candidate indexes from QoIs.")
+            #for index in candidate_indexes.values():
+            #    print(f"\t\tIndex ID: {index.index_id}, Index Columns: {index.index_columns}, Include Columns: {index.include_columns}, Size: {self.index_size[index.#index_id]} Mb")            
 
         return candidate_indexes   
 
@@ -351,31 +351,27 @@ class MAB:
     def select_best_configuration(self, context_vectors, candidate_indexes, verbose):
         if len(candidate_indexes) == 0:
             return {}
-        
-        if self.current_round > 2:
-            # compute linUCB parameters
-            V_inv = np.linalg.inv(self.V)
-            theta = V_inv @ self.b
-            # rescale the weight corresponding to second component of the derived context vector, i.e. creation cost
-            # (this is useful for reducing the impact of creation cost on the selection process)
-            theta[1] = theta[1]/self.creation_time_reduction_factor
-            # compute expected rewards
-            expected_rewards = (context_vectors @ theta).reshape(-1)
-            # estimate upper confidence bound/variance
-            variances = self.alpha * np.sqrt(np.diag(context_vectors @ V_inv @ context_vectors.T))
-            # compute upper bounds
-            upper_bounds = expected_rewards + variances
-            # convert to dict
-            upper_bounds = {index_id: upper_bound for index_id, upper_bound in zip(candidate_indexes.keys(), upper_bounds)}
-        else:
-            # if current round is less than 2, then assign uniform ucb values
-            shuffled_indexes = list(candidate_indexes.keys())
-            np.random.shuffle(shuffled_indexes)
-            upper_bounds = {index_id:1 for index_id in shuffled_indexes}
+
+        # compute linUCB parameters
+        V_inv = np.linalg.inv(self.V) # shape = (context_size, context_size)
+        theta = V_inv @ self.b # shape = (context_size, 1)
+
+        upper_bounds = {}
+        for i, index_id in enumerate(candidate_indexes.keys()):
+            context_vector = context_vectors[i].reshape(-1, 1) # shape = (context_size, 1)    
+            # estimated creation cost
+            creation_cost = np.ndarray.item(theta[1] * context_vector[1])
+            # estimate reward excluding creation cost
+            average_reward = np.ndarray.item(theta.T @ context_vector) - creation_cost
+            # compute ucb
+            ucb = average_reward + self.alpha * np.sqrt(np.ndarray.item(context_vector.T @ V_inv @ context_vector))
+            # add in scaled creation cost
+            ucb += creation_cost / self.creation_time_reduction_factor
+            upper_bounds[index_id] = ucb
 
         # solve 0-1 knapsack problem to select best configuration
-        #selected_indexes = self.solve_knapsack(upper_bounds, candidate_indexes)
-        selected_indexes = self.submodular_oracle(upper_bounds, candidate_indexes, verbose)
+        selected_indexes = self.solve_knapsack(upper_bounds, candidate_indexes, verbose)
+        #selected_indexes = self.submodular_oracle(upper_bounds, candidate_indexes, verbose)
         # convert to dict
         selected_indexes = {index.index_id: index for index in selected_indexes}
         # decay alpha
@@ -386,10 +382,14 @@ class MAB:
 
         if verbose:
             # sort indexes by decreasing order of upper bound
-            #sorted_indexes = sorted(upper_bounds, key=upper_bounds.get, reverse=True)
-            #print(f"\n\tUpper Bounds:")
-            #for index_id in sorted_indexes:
-            #    print(f"\t\tIndex ID: {index_id}, Upper Bound: {upper_bounds[index_id]}")
+            sorted_indexes = sorted(upper_bounds, key=upper_bounds.get, reverse=True)
+            print(f"\n\tUpper Bounds:")
+            i = 0
+            for index_id in sorted_indexes:
+                print(f"\t\tIndex ID: {index_id}, Upper Bound: {upper_bounds[index_id]}")
+                i += 1
+                if i == 30:
+                    break
 
             sorted_selected_indexes = {k: v for k, v in sorted(selected_indexes.items(), key=lambda item: upper_bounds[item[0]], reverse=True)}
             # create dict mapping selected index id to upper bound, in sorted order of decreasing upper bound  
@@ -398,6 +398,8 @@ class MAB:
             print(f"\t\t{list(sorted_indexes.items())}")    
 
         return selected_indexes
+
+
 
 
     # submodular maximization oracle for obtaining knapsack problem approximate solution
@@ -442,6 +444,7 @@ class MAB:
                 reduced_arm_ucb_dict[index_id] = arm_ucb_dict[index_id]
         arm_ucb_dict = reduced_arm_ucb_dict
 
+        """
         # remove arms that are part of the same cluster to improve diversity
         reduced_arm_ucb_dict = {}
         for index_id in arm_ucb_dict:
@@ -465,6 +468,7 @@ class MAB:
             if self.index_query_templates[index_id] != set():
                 reduced_arm_ucb_dict[index_id] = arm_ucb_dict[index_id]
         arm_ucb_dict = reduced_arm_ucb_dict        
+        """
 
         # remove arms that exceed the remaining memory budget
         arm_ucb_dict = {index_id: index for index_id, index in arm_ucb_dict.items() if self.index_size[index_id] <= remaining_memory}    
@@ -474,10 +478,8 @@ class MAB:
             recuced_arm_ucb_dict = {}
             for index_id in arm_ucb_dict:
                 if (candidate_indexes[index_id].table_name == candidate_indexes[chosen_id].table_name and len(candidate_indexes[index_id].index_columns) > prefix_length):
-                    for i in range(prefix_length):
-                        if candidate_indexes[index_id].index_columns[i] != candidate_indexes[chosen_id].index_columns[i]:
-                            recuced_arm_ucb_dict[index_id] = arm_ucb_dict[index_id]
-                            break
+                    if candidate_indexes[index_id].index_columns[:prefix_length] != candidate_indexes[chosen_id].index_columns[:prefix_length]:
+                        recuced_arm_ucb_dict[index_id] = arm_ucb_dict[index_id]
                 else:
                     recuced_arm_ucb_dict[index_id] = arm_ucb_dict[index_id]        
             arm_ucb_dict = recuced_arm_ucb_dict    
@@ -487,7 +489,7 @@ class MAB:
         
         
     # greedy 1/2 approximation algorithm for knapsack problem
-    def solve_knapsack(self, upper_bounds, candidate_indexes):
+    def solve_knapsack(self, upper_bounds, candidate_indexes, verbose):
         # keep at most self.MAX_INDEXES_PER_TABLE indexes per table
         table_index_counts = defaultdict(int)    
 
@@ -509,6 +511,9 @@ class MAB:
             if memory_used >= self.config_memory_MB:
                 break 
 
+        if verbose:
+            print(f"\nMax memory budget: {self.config_memory_MB} MB, Used memory: {memory_used} MB")
+           
         return selected_indexes
 
 
@@ -570,11 +575,12 @@ class MAB:
         if verbose:
             print(f"\nExecution Info:")
             for i, (query, info) in enumerate(zip(mini_workload, execution_info)):
-                print(f"\n\t\tQuery# {i+1} , Execution Time: {info[0]}")
-                print(f"\t\tTable Access Info: {info[1]}")
-                print(f"\t\tIndex Access Info: {info[2]}")
-                print(f"\t\tBitmap Heap Scan Info: {info[3]}")
-                #print(f"\nQuery# {i+1} , Execution Time: {info[0]}, Tables Accessed: {list(info[1].keys())}, Indexes Accessed: {list(info[2].keys())}, Bitmap Heap Scans : {list(bitmap_heapscan_info.keys())}")
+                #print(f"\n\t\tQuery# {i+1} , Execution Time: {info[0]}")
+                #print(f"\t\tTable Access Info: {info[1]}")
+                #print(f"\t\tIndex Access Info: {info[2]}")
+                #print(f"\t\tBitmap Heap Scan Info: {info[3]}")
+                print(f"\nQuery# {i+1} , Execution Time: {info[0]}, Tables Accessed: {list(info[1].keys())}, Indexes Accessed: {list(info[2].keys())}, Bitmap Heap Scans : {list(bitmap_heapscan_info.keys())}")
+            print()    
 
         # extract index scan times and table sequential scan times from the execution info and shape index reward
         index_reward = {}
@@ -610,9 +616,9 @@ class MAB:
                 creation_time = self.current_round_index_creation_time.get(index_id, 0)
                 if verbose: 
                     if bitmap_heap_scan:
-                        print(f"\t\t\tAccumulating reward for index: {index_id}, table: {table_name}, scan type:{scan_type}, index scan time: {index_scan_time} ms, bitmap heap scan time: {bitmap_heap_scan_time} ms, gain: {gain}, creation time: {creation_time} ms")
+                        print(f"Accumulating reward: {index_id}, table: {table_name}, scan type:{scan_type}, index scan time: {index_scan_time} ms, bitmap heap scan time: {bitmap_heap_scan_time} ms, gain: {gain}, creation time: {creation_time} ms\n")
                     else:
-                        print(f"\t\t\tAccumulating reward for index: {index_id}, table: {table_name}, scan type:{scan_type} ms, index scan time: {index_scan_time} ms, gain: {gain}, creation time: {creation_time} ms")
+                        print(f"Accumulating reward: {index_id}, table: {table_name}, scan type:{scan_type}, index scan time: {index_scan_time} ms, gain: {gain}, creation time: {creation_time} ms\n")
                 
                 # save gain and creation cost as separate components, accumulated gain over multiple uses
                 if index_id in index_reward:
