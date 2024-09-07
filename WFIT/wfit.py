@@ -1027,6 +1027,8 @@ class WFIT:
             all_indexes_added += list(indexes_added)
             all_indexes_removed += list(indexes_removed)
 
+        if verbose: print(f"\nCurrent recommendation: {list(self.M.keys())}\n")
+
         return all_indexes_added, all_indexes_removed
 
 
@@ -1502,11 +1504,6 @@ class WFIT:
                 if num_keep <= 0:
                     break
 
-                if len(top_indexes_keep[table]) == 0:
-                    top_indexes_keep[table].append(index)
-                    num_keep -= 1
-                    continue
-
                 # don't add index if it has a matching prefix with any of the already selected or materialized indexes 
                 if len(index.index_columns) <= matching_prefix_length:
                     top_indexes_keep[table].append(index)
@@ -1524,7 +1521,7 @@ class WFIT:
                     num_keep -= 1
                     continue
 
-            # print(f"\nSelected indexes for table: {table}: {[index.index_id for index in top_indexes_keep[table]]}")    
+            print(f"\nSelected indexes for table: {table}: {[index.index_id for index in top_indexes_keep[table]]}")    
 
         # make sure the number of selected indexes per table is at most MAX_INDEXES_PER_TABLE
         for table in top_indexes_keep:
