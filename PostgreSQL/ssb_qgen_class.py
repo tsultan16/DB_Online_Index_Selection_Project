@@ -93,6 +93,7 @@ class Query:
         self.predicates = predicates
         self.order_by = order_by
         self.group_by = group_by
+        self.predicate_dict = None
 
     def __str__(self):
         return f"template id: {self.template_id}, query: {self.query_string}, payload: {self.payload}, predicates: {self.predicates}, order by: {self.order_by}, group by: {self.group_by}"    
@@ -369,8 +370,195 @@ class QGEN:
                     14: {},
                     15: {},
                     16: {},
-        }
+                    }
 
+        self.predicate_dicts = {1: {'lineorder': [
+                                        {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True},
+                                        {'column': 'lo_discount', 'operator': 'range', 'value': ('discount_low', 'discount_high'), 'join': False},
+                                        {'column': 'lo_quantity', 'operator': 'inequality', 'value': 'quantity', 'join': False}],
+                                    'dwdate': [
+                                        {'column': 'd_year', 'operator': 'eq', 'value': 'year'}]}, 
+                                
+                                2: {'lineorder': [
+                                        {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True},
+                                        {'column': 'lo_discount', 'operator': 'range', 'value': ('discount_low', 'discount_high'), 'join': False},
+                                        {'column': 'lo_quantity', 'operator': 'range', 'value': ('quantity_low', 'quantity_high'), 'join': False}],
+                                    'dwdate': [
+                                        {'column': 'd_yearmonthnum', 'operator': 'eq', 'value': 'yearmonthnum', 'join': False}]},
+                                
+                                3: {'lineorder': [
+                                        {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True},
+                                        {'column': 'lo_discount', 'operator': 'range', 'value': ('discount_low', 'discount_high'), 'join': False},
+                                        {'column': 'lo_quantity', 'operator': 'range', 'value': ('quantity_low', 'quantity_high'), 'join': False}],
+                                    'dwdate': [
+                                        {'column': 'd_weeknuminyear', 'operator': 'eq', 'value': 'weeknuminyear', 'join': False},
+                                        {'column': 'd_year', 'operator': 'eq', 'value': 'year', 'join': False}]}, 
+
+                                4: {'lineorder': [
+                                        {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True},
+                                        {'column': 'lo_partkey', 'operator': 'eq', 'value': 'p_partkey', 'join': True},
+                                        {'column': 'lo_suppkey', 'operator': 'eq', 'value': 's_suppkey', 'join': True}
+                                    ],
+                                    'part': [
+                                        {'column': 'p_category', 'operator': 'eq', 'value': 'category', 'join': False}
+                                    ],
+                                    'supplier': [
+                                        {'column': 's_region', 'operator': 'eq', 'value': 'sregion', 'join': False}
+                                    ]},
+
+                                5: {'lineorder': [
+                                            {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True},
+                                            {'column': 'lo_partkey', 'operator': 'eq', 'value': 'p_partkey', 'join': True},
+                                            {'column': 'lo_suppkey', 'operator': 'eq', 'value': 's_suppkey', 'join': True}
+                                    ],
+                                    'part': [
+                                        {'column': 'p_brand', 'operator': 'range', 'value': ('brand1_low', 'brand1_high'), 'join': False}
+                                    ],
+                                    'supplier': [
+                                        {'column': 's_region', 'operator': 'eq', 'value': 'sregion', 'join': False}
+                                    ]}, 
+
+                                6: {'lineorder': [
+                                        {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True},
+                                        {'column': 'lo_partkey', 'operator': 'eq', 'value': 'p_partkey', 'join': True},
+                                        {'column': 'lo_suppkey', 'operator': 'eq', 'value': 's_suppkey', 'join': True}
+                                    ],
+                                    'part': [
+                                        {'column': 'p_brand', 'operator': 'eq', 'value': 'brand1', 'join': False}
+                                    ],
+                                    'supplier': [
+                                        {'column': 's_region', 'operator': 'eq', 'value': 'sregion', 'join': False}
+                                    ]},
+
+                                7: {'customer': [
+                                        {'column': 'c_region', 'operator': 'eq', 'value': 'region', 'join': False}
+                                    ],
+                                    'lineorder': [
+                                        {'column': 'lo_custkey', 'operator': 'eq', 'value': 'c_custkey', 'join': True},
+                                        {'column': 'lo_suppkey', 'operator': 'eq', 'value': 's_suppkey', 'join': True},
+                                        {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True}
+                                    ],
+                                    'supplier': [
+                                        {'column': 's_region', 'operator': 'eq', 'value': 'region', 'join': False}
+                                    ],
+                                    'dwdate': [
+                                        {'column': 'd_year', 'operator': 'range', 'value': ('year_low', 'year_high'), 'join': False}
+                                    ]},
+
+                                8: {'customer': [
+                                        {'column': 'c_nation', 'operator': 'eq', 'value': 'region', 'join': False}
+                                    ],
+                                    'lineorder': [
+                                        {'column': 'lo_custkey', 'operator': 'eq', 'value': 'c_custkey', 'join': True},
+                                        {'column': 'lo_suppkey', 'operator': 'eq', 'value': 's_suppkey', 'join': True},
+                                        {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True}
+                                    ],
+                                    'supplier': [
+                                        {'column': 's_nation', 'operator': 'eq', 'value': 'region', 'join': False}
+                                    ],
+                                    'dwdate': [
+                                        {'column': 'd_year', 'operator': 'range', 'value': ('year_low', 'year_high'), 'join': False}
+                                    ]},
+
+                                9: {'customer': [
+                                        {'column': 'c_city', 'operator': 'in', 'value': ['city_1', 'city_2'], 'join': False}
+                                    ],
+                                    'lineorder': [
+                                        {'column': 'lo_custkey', 'operator': 'eq', 'value': 'c_custkey', 'join': True},
+                                        {'column': 'lo_suppkey', 'operator': 'eq', 'value': 's_suppkey', 'join': True},
+                                        {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True}
+                                    ],
+                                    'supplier': [
+                                        {'column': 's_city', 'operator': 'in', 'value': ['city_1', 'city_2'], 'join': False}
+                                    ],
+                                    'dwdate': [
+                                        {'column': 'd_year', 'operator': 'range', 'value': ('year_low', 'year_high'), 'join': False}
+                                    ]},  
+
+                                10: {'customer': [
+                                        {'column': 'c_city', 'operator': 'in', 'value': ['city_1', 'city_2'], 'join': False}
+                                    ],
+                                    'lineorder': [
+                                        {'column': 'lo_custkey', 'operator': 'eq', 'value': 'c_custkey', 'join': True},
+                                        {'column': 'lo_suppkey', 'operator': 'eq', 'value': 's_suppkey', 'join': True},
+                                        {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True}
+                                    ],
+                                    'supplier': [
+                                        {'column': 's_city', 'operator': 'in', 'value': ['city_1', 'city_2'], 'join': False}
+                                    ],
+                                    'dwdate': [
+                                        {'column': 'd_yearmonth', 'operator': 'eq', 'value': 'yearmonth', 'join': False}
+                                    ]},  
+
+                                11: {'customer': [
+                                        {'column': 'c_region', 'operator': 'eq', 'value': 'region', 'join': False}
+                                    ],
+                                    'supplier': [
+                                        {'column': 's_region', 'operator': 'eq', 'value': 'region', 'join': False}
+                                    ],
+                                    'part': [
+                                        {'column': 'p_mfgr', 'operator': 'in', 'value': ['mfgr_1', 'mfgr_2'], 'join': False}
+                                    ],
+                                    'lineorder': [
+                                        {'column': 'lo_custkey', 'operator': 'eq', 'value': 'c_custkey', 'join': True},
+                                        {'column': 'lo_suppkey', 'operator': 'eq', 'value': 's_suppkey', 'join': True},
+                                        {'column': 'lo_partkey', 'operator': 'eq', 'value': 'p_partkey', 'join': True},
+                                        {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True}
+                                    ]}, 
+
+                                12: {'dwdate': [
+                                        {'column': 'd_year', 'operator': 'in', 'value': ['year_1', 'year_2'], 'join': False}
+                                    ],
+                                    'customer': [
+                                        {'column': 'c_region', 'operator': 'eq', 'value': 'region', 'join': False}
+                                    ],
+                                    'supplier': [
+                                        {'column': 's_region', 'operator': 'eq', 'value': 'region', 'join': False}
+                                    ],
+                                    'part': [
+                                        {'column': 'p_mfgr', 'operator': 'in', 'value': ['mfgr_1', 'mfgr_2'], 'join': False}
+                                    ],
+                                    'lineorder': [
+                                        {'column': 'lo_custkey', 'operator': 'eq', 'value': 'c_custkey', 'join': True},
+                                        {'column': 'lo_suppkey', 'operator': 'eq', 'value': 's_suppkey', 'join': True},
+                                        {'column': 'lo_partkey', 'operator': 'eq', 'value': 'p_partkey', 'join': True},
+                                        {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True}
+                                    ]}, 
+
+                                13: {'dwdate': [
+                                        {'column': 'd_year', 'operator': 'in', 'value': ['year_1', 'year_2'], 'join': False}
+                                    ],
+                                    'customer': [
+                                        {'column': 'c_region', 'operator': 'eq', 'value': 'region', 'join': False}
+                                    ],
+                                    'supplier': [
+                                        {'column': 's_nation', 'operator': 'eq', 'value': 'nation', 'join': False}
+                                    ],
+                                    'part': [
+                                        {'column': 'p_category', 'operator': 'eq', 'value': 'category', 'join': False}
+                                    ],
+                                    'lineorder': [
+                                        {'column': 'lo_custkey', 'operator': 'eq', 'value': 'c_custkey', 'join': True},
+                                        {'column': 'lo_suppkey', 'operator': 'eq', 'value': 's_suppkey', 'join': True},
+                                        {'column': 'lo_partkey', 'operator': 'eq', 'value': 'p_partkey', 'join': True},
+                                        {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True}
+                                    ]},
+
+                                14:{'lineorder': [
+                                        {'column': 'lo_linenumber', 'operator': 'range', 'value': ('linenumber_low', 'linenumber_high'), 'join': False},
+                                        {'column': 'lo_quantity', 'operator': 'eq', 'value': 'quantity', 'join': False}
+                                    ]},
+
+                                15: {'lineorder': [
+                                        {'column': 'lo_linenumber', 'operator': 'range', 'value': ('linenumber_low', 'linenumber_high'), 'join': False},
+                                        {'column': 'lo_quantity', 'operator': 'eq', 'value': 'quantity', 'join': False}
+                                    ]},              
+
+                                16: {'lineorder': [
+                                        {'column': 'lo_extendedprice', 'operator': 'eq', 'value': 'extendedprice', 'join': False}
+                                    ]}
+
+                                }
 
 
     def generate_query(self, template_num):
@@ -392,6 +580,10 @@ class QGEN:
             inequality_op = random.choice(['<', '>'])
 
             query = template.format(year=year, discount_low=discount_low, discount_high=discount_high, inequality=inequality_op, quantity=quantity)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['lineorder'][1]['value'] = (discount_low, discount_high)
+            predicate_dict['lineorder'][2]['value'] = quantity
+            predicate_dict['dwdate'][0]['value'] = year
 
         elif template_num == 2:
             yearmonthnum_stats = self.stats['dwdate']['d_yearmonthnum']
@@ -405,6 +597,10 @@ class QGEN:
             quantity_high = quantity_low + 9
 
             query = template.format(yearmonthnum=yearmonthnum, discount_low=discount_low, discount_high=discount_high, quantity_low=quantity_low, quantity_high=quantity_high)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['lineorder'][1]['value'] = (discount_low, discount_high)
+            predicate_dict['lineorder'][2]['value'] = (quantity_low, quantity_high)
+            predicate_dict['dwdate'][0]['value'] = yearmonthnum
 
         elif template_num == 3:
             weeknuminyear_stats = self.stats['dwdate']['d_weeknuminyear']
@@ -420,6 +616,11 @@ class QGEN:
             quantity_high = quantity_low + 9
 
             query = template.format(weeknuminyear=weeknuminyear, year=year, discount_low=discount_low, discount_high=discount_high, quantity_low=quantity_low, quantity_high=quantity_high)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['lineorder'][1]['value'] = (discount_low, discount_high)
+            predicate_dict['lineorder'][2]['value'] = (quantity_low, quantity_high)
+            predicate_dict['dwdate'][0]['value'] = weeknuminyear
+            predicate_dict['dwdate'][1]['value'] = year
 
         elif template_num == 4:
             category_stats = self.stats['part']['p_category']
@@ -429,6 +630,9 @@ class QGEN:
             sregion = random.choice(list(sregion_stats['histogram'].keys()))
 
             query = template.format(category=category, sregion=sregion)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['part'][0]['value'] = category   
+            predicate_dict['supplier'][0]['value'] = sregion            
 
         elif template_num == 5:
             brand1_stats = self.stats['part']['p_brand']
@@ -446,6 +650,9 @@ class QGEN:
 
             sregion = random.choice(list(sregion_stats['histogram'].keys()))
             query = template.format(brand1_low=brand1_low, brand1_high=brand1_high, sregion=sregion)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['part'][0]['value'] = (brand1_low, brand1_high)
+            predicate_dict['supplier'][0]['value'] = sregion
 
         elif template_num == 6:
             brand1_stats = self.stats['part']['p_brand']
@@ -455,6 +662,9 @@ class QGEN:
             sregion = random.choice(list(sregion_stats['histogram'].keys()))
 
             query = template.format(brand1=brand1, sregion=sregion)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['part'][0]['value'] = brand1
+            predicate_dict['supplier'][0]['value'] = sregion
 
         elif template_num == 7:
             region_stats = self.stats['customer']['c_region']
@@ -465,6 +675,10 @@ class QGEN:
             year_high = year_low + 5
 
             query = template.format(region=region, year_low=year_low, year_high=year_high)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['customer'][0]['value'] = region
+            predicate_dict['supplier'][0]['value'] = region
+            predicate_dict['dwdate'][0]['value'] = (year_low, year_high)
 
         elif template_num == 8:
             region_stats = self.stats['customer']['c_nation']
@@ -475,6 +689,10 @@ class QGEN:
             year_high = year_low + 5
 
             query = template.format(region=region, year_low=year_low, year_high=year_high)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['customer'][0]['value'] = region
+            predicate_dict['supplier'][0]['value'] = region
+            predicate_dict['dwdate'][0]['value'] = (year_low, year_high)
 
         elif template_num == 9:
             city_stats = self.stats['customer']['c_city']
@@ -486,6 +704,10 @@ class QGEN:
             year_high = year_low + 5
 
             query = template.format(city_1=city_1, city_2=city_2, year_low=year_low, year_high=year_high)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['customer'][0]['value'] = [city_1, city_2]
+            predicate_dict['supplier'][0]['value'] = [city_1, city_2]
+            predicate_dict['dwdate'][0]['value'] = (year_low, year_high)
 
         elif template_num == 10:
             city_stats = self.stats['customer']['c_city']
@@ -496,6 +718,10 @@ class QGEN:
             yearmonth = random.choice(list(yearmonth_stats['histogram'].keys()))
 
             query = template.format(city_1=city_1, city_2=city_2, yearmonth=yearmonth)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['customer'][0]['value'] = [city_1, city_2]
+            predicate_dict['supplier'][0]['value'] = [city_1, city_2]
+            predicate_dict['dwdate'][0]['value'] = yearmonth
 
         elif template_num == 11:
             region_stats = self.stats['customer']['c_region']
@@ -511,6 +737,10 @@ class QGEN:
             mfgr_1_high = 'MFGR#' + str(mfgr_1_high_num)
 
             query = template.format(region=region, mfgr_1=mfgr_1_low, mfgr_2=mfgr_1_high)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['customer'][0]['value'] = region
+            predicate_dict['part'][0]['value'] = (mfgr_1_low, mfgr_1_high)
+            predicate_dict['supplier'][0]['value'] = region
 
         elif template_num == 12:
             region_stats = self.stats['customer']['c_region']
@@ -529,6 +759,11 @@ class QGEN:
             mfgr_1_high = 'MFGR#' + str(mfgr_1_high_num)
 
             query = template.format(region=region, year_1=year_low, year_2=year_high, mfgr_1=mfgr_1_low, mfgr_2=mfgr_1_high)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['customer'][0]['value'] = region
+            predicate_dict['part'][0]['value'] = [mfgr_1_low, mfgr_1_high]
+            predicate_dict['supplier'][0]['value'] = region
+            predicate_dict['dwdate'][0]['value'] = [year_low, year_high]
 
         elif template_num == 13:
             region_stats = self.stats['customer']['c_region']
@@ -543,6 +778,11 @@ class QGEN:
             category = random.choice(list(category_stats['histogram'].keys()))
 
             query = template.format(region=region, nation=nation, year_1=year_low, year_2=year_high, category=category)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['customer'][0]['value'] = region
+            predicate_dict['part'][0]['value'] = category
+            predicate_dict['supplier'][0]['value'] = nation
+            predicate_dict['dwdate'][0]['value'] = [year_low, year_high]
         
         elif template_num == 14:
             linenumber_stats = self.stats['lineorder']['lo_linenumber']
@@ -553,6 +793,9 @@ class QGEN:
             quantity = random.randint(quantity_stats['min'], quantity_stats['max'])
 
             query = template.format(linenumber_low=linenumber_low, linenumber_high=linenumber_high, quantity=quantity)
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['lineorder'][0]['value'] = (linenumber_low, linenumber_high)
+            predicate_dict['lineorder'][1]['value'] = quantity
 
         elif template_num == 15:
             linenumber_stats = self.stats['lineorder']['lo_linenumber']
@@ -563,6 +806,9 @@ class QGEN:
             quantity = random.randint(quantity_stats['min'], quantity_stats['max'])
 
             query = template.format(linenumber_low=linenumber_low, linenumber_high=linenumber_high, quantity=quantity) 
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['lineorder'][0]['value'] = (linenumber_low, linenumber_high)
+            predicate_dict['lineorder'][1]['value'] = quantity
 
         elif template_num == 16:
             extendedprice_stats = self.stats['lineorder']['lo_extendedprice']
@@ -570,10 +816,12 @@ class QGEN:
             extendedprice = random.randint(extendedprice_stats['min'], extendedprice_stats['max'])
 
             query = template.format(extendedprice=extendedprice)
-            
+            predicate_dict = self.predicate_dicts[template_num]
+            predicate_dict['lineorder'][0]['value'] = extendedprice
 
         # create Query object
         query = Query(template_num, query, self.payloads[template_num], self.predicates[template_num], self.order_bys[template_num], self.group_bys[template_num])
+        query.predicate_dict = predicate_dict    
 
         return query
         
