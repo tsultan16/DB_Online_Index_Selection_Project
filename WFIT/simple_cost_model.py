@@ -181,9 +181,10 @@ class SimpleCost:
         most_common_vals = stats['most_common_vals']
         most_common_freqs = stats['most_common_freqs']
 
-        print(f"Histogram bounds: {histogram_bounds}")
-        print(f"Most common values: {most_common_vals}")
-        print(f"Most common frequencies: {most_common_freqs}")
+
+        #print(f"Histogram bounds: {histogram_bounds}")
+        #print(f"Most common values: {most_common_vals}")
+        #print(f"Most common frequencies: {most_common_freqs}")
 
         # convert most_common_values string to list of correct data type
         if most_common_vals:
@@ -301,14 +302,22 @@ class SimpleCost:
                 bin_lower_bound = histogram_bounds[i]
                 bin_upper_bound = histogram_bounds[i+1]
 
-                # check for range overlap
-                if bin_lower_bound <= value <= bin_upper_bound:
-                    bin_width = bin_upper_bound - bin_lower_bound
-                    if bin_width > 0:
-                        # assume uniform distribution within this bin and calculate selectivity
-                        uniform_selectivity = 1.0 / (bin_width*total_bins)
-                        selectivity = min(selectivity, uniform_selectivity)
-                    break    
+                if data_type == 'numeric':
+                    # check for range overlap
+                    if bin_lower_bound <= value <= bin_upper_bound:
+                        bin_width = bin_upper_bound - bin_lower_bound
+                        if bin_width > 0:
+                            # assume uniform distribution within this bin and calculate selectivity
+                            uniform_selectivity = 1.0 / (bin_width*total_bins)
+                            selectivity = min(selectivity, uniform_selectivity)
+                        break    
+
+                elif data_type == 'char':
+                    # check for range overlap
+                    if bin_lower_bound <= value <= bin_upper_bound:
+                        # assume the whole bin overlaps
+                        selectivity = 1.0 / total_bins
+                        break        
 
         return selectivity
 
@@ -379,10 +388,10 @@ class SimpleCost:
         # enumerate the access paths for each table
         access_paths = self.enumerate_access_paths(indexes, verbose)
         # find the cheapest access paths for each table
-        cheapest_table_access_path = self.find_cheapest_paths(access_paths, self.predicates, indexes, self.stats, self.estimated_rows, self.sequentail_scan_cost_multiplier, self.index_scan_cost_multiplier, verbose=True)
+        cheapest_table_access_path = self.find_cheapest_paths(access_paths, self.predicates, indexes, self.stats, self.estimated_rows, self.sequentail_scan_cost_multiplier, self.index_scan_cost_multiplier, verbose=verbose)
         print(f"\nCheapest access paths: ")
-        for table, path in cheapest_table_access_path.items():
-            print(f"Table: {table}, Cheapest path: {path}")
+        for table, (path, cost) in cheapest_table_access_path.items():
+            print(f"Table: {table}, Cheapest path: {path}, Cost: {cost}")   
 
 
 
@@ -418,6 +427,7 @@ class SimpleCost:
             print(f"Join predicates: {join_predicates}")
 
         # add join predicates to the main predicate dictionary
+        """
         for table_name in join_predicates:
             if table_name not in self.predicates:
                 self.predicates[table_name] = []
@@ -428,6 +438,14 @@ class SimpleCost:
                 if pred_key not in existing_predicates:
                     existing_predicates[pred_key] = pred
             self.predicates[table_name] = list(existing_predicates.values())
+        """
+        for table_name in join_predicates:
+            if table_name not in self.predicates:
+                self.predicates[table_name] = []
+            self.predicates[table_name] = self.predicates[table_name] + join_predicates[table_name]
+
+        if verbose:
+            print(f"Updated predicates: {self.predicates}")
 
         access_paths = {}
         for table_name in self.tables:
@@ -438,6 +456,8 @@ class SimpleCost:
                 table_payload_cols = [col for col in self.payload[table_name] if col in self.tables[table_name]]   
             if table_name in join_predicates_temp:
                 join_predicate_cols = join_predicates_temp[table_name]
+            else:
+                join_predicate_cols = []    
             
             relevant_predicate_cols = set(table_predicate_cols).union(join_predicate_cols)
             table_access_paths = [{'scan_type': 'Sequential Scan'}]
@@ -577,7 +597,7 @@ class SimpleCost:
             # enumerate over access paths for this table
             cheapest_cost = float('inf')
             for path in access_paths[table_name]:
-                print(f"\tComputing cost for access path: {path}")
+                if verbose: print(f"\tComputing cost for access path: {path}")
                 # compute the cost of this access path
                 # (for now, assume cost is proportional to the cardinality of the data that needs to be accessed)
                 if path['scan_type'] == 'Sequential Scan':
@@ -597,7 +617,7 @@ class SimpleCost:
                 if cost < cheapest_cost:
                     cheapest_cost = cost
                     cheapest_access_path = path
-            cheapest_table_access_path[table_name] = cheapest_access_path
+            cheapest_table_access_path[table_name] = (cheapest_access_path, cheapest_cost)
             if verbose: print(f"\tCheapest access path: {cheapest_access_path}, Cost: {cheapest_cost}")
         return cheapest_table_access_path
 
