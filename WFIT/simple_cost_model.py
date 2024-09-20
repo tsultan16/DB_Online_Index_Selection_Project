@@ -74,16 +74,18 @@ def get_table_stats(table_name):
 
 class SimpleCost:
 
-    def __init__(self, sequential_scan_cost_multiplier=1.0, index_scan_cost_multiplier=2.0):
+    def __init__(self, stats, estimated_rows, sequential_scan_cost_multiplier=1.0, index_scan_cost_multiplier=2.0):
         self.sequentail_scan_cost_multiplier = sequential_scan_cost_multiplier
         self.index_scan_cost_multiplier = index_scan_cost_multiplier 
-    
+        """    
         # Get the statistics for all tables in the SSB database
         self.table_names = ["customer", "dwdate", "lineorder", "part", "supplier"]
         self.stats = {}
         self.estimated_rows = {}
         for table_name in self.table_names:
             self.stats[table_name], self.estimated_rows[table_name] = get_table_stats(table_name)
+        """
+        self.stats, self.estimated_rows = stats, estimated_rows
 
         ssb_tables, pk_columns = get_ssb_schema()
         # create a dictionary and specify whether each attribute in each table is numeric or char
@@ -372,36 +374,56 @@ class SimpleCost:
             self.tables[table_name] = list(set(self.tables[table_name] + query_object.predicates[table_name]))
 
         # extract the payload
-        self.payload = query_object.payload
+        payload = query_object.payload
         # extract the predicates
-        self.predicates = query_object.predicate_dict
+        self.id2predicate = {}
+        predicate_dict = query_object.predicate_dict
+        predicates = {}
+        # map predicate ids to predicate strings
+        #id = 0
+        for table_name in predicate_dict:
+            predicates[table_name] = []
+            for pred in predicate_dict[table_name]:
+                id = len(self.id2predicate)
+                predicates[table_name].append(id)
+                self.id2predicate[id] = pred
+                #id += 1
 
         if verbose:
             print(f"Tables and columns: {self.tables}")   
-            print(f"Payload: {self.payload}")
+            print(f"Payload: {payload}")
             print(f"Predicates:")
-            for table_name, predicate_list in self.predicates.items():
+            for table_name, predicate_list in predicates.items():
                 print(f"\n{table_name}")
-                for predicate in predicate_list:
-                    print(f"\t{predicate}")        
+                for predicate_id in predicate_list:
+                    print(f"\t{self.id2predicate[predicate_id]}")        
 
         # enumerate the access paths for each table
-        access_paths = self.enumerate_access_paths(indexes, verbose)
+        access_paths, predicates = self.enumerate_access_paths(indexes, predicates, payload, verbose)
         # find the cheapest access paths for each table
-        cheapest_table_access_path = self.find_cheapest_paths(access_paths, self.predicates, indexes, self.stats, self.estimated_rows, self.sequentail_scan_cost_multiplier, self.index_scan_cost_multiplier, verbose=verbose)
-        print(f"\nCheapest access paths: ")
+        cheapest_table_access_path = self.find_cheapest_paths(access_paths, predicates, indexes, self.stats, self.estimated_rows, self.sequentail_scan_cost_multiplier, self.index_scan_cost_multiplier, verbose=verbose)
+        
+        if verbose:
+            print(f"\nCheapest access paths: ")
+            for table, (path, cost) in cheapest_table_access_path.items():
+                print(f"Table: {table}, Cheapest path: {path}, Cost: {cost}")   
+        total_cost = sum(cost for path, cost in cheapest_table_access_path.values())
+        indexes_used = []
         for table, (path, cost) in cheapest_table_access_path.items():
-            print(f"Table: {table}, Cheapest path: {path}, Cost: {cost}")   
+            if path['scan_type'] == 'Index Scan' or path['scan_type'] == 'Index Only Scan':
+                indexes_used.append(path['index_id'])
 
+        return total_cost, indexes_used
+    
 
-
-    def enumerate_access_paths(self, indexes, verbose):
+    def enumerate_access_paths(self, indexes, predicates, payload, verbose):
         # extract join predicate columns
         join_predicates = {}
         join_predicates_temp = {}
-        for table_name in self.predicates:
-            table_preicates = self.predicates[table_name]
-            for pred in table_preicates:
+        for table_name in predicates:
+            table_preicates = predicates[table_name]
+            for pred_id in table_preicates:
+                pred = self.id2predicate[pred_id]
                 if pred['join'] == True:
                     if table_name not in join_predicates_temp:
                         join_predicates_temp[table_name] = []
@@ -417,43 +439,33 @@ class SimpleCost:
                             join_pred = pred.copy()
                             join_pred['column'] = other_table_column
                             join_pred['value'] = pred['column']
+                            new_id = len(self.id2predicate)
+                            self.id2predicate[new_id] = join_pred 
                             if other_table_name not in join_predicates:
                                 join_predicates[other_table_name] = []
-                            join_predicates[other_table_name].append(join_pred)
+                            join_predicates[other_table_name].append(new_id)
                             break
 
         if verbose:
-            print(f"Predicates: {self.predicates}")
+            print(f"Predicates: {predicates}")
             print(f"Join predicates: {join_predicates}")
 
         # add join predicates to the main predicate dictionary
-        """
         for table_name in join_predicates:
-            if table_name not in self.predicates:
-                self.predicates[table_name] = []
-            # Ensure unique dictionaries in the list
-            existing_predicates = {frozenset(pred.items()): pred for pred in self.predicates[table_name]}
-            for pred in join_predicates[table_name]:
-                pred_key = frozenset(pred.items())
-                if pred_key not in existing_predicates:
-                    existing_predicates[pred_key] = pred
-            self.predicates[table_name] = list(existing_predicates.values())
-        """
-        for table_name in join_predicates:
-            if table_name not in self.predicates:
-                self.predicates[table_name] = []
-            self.predicates[table_name] = self.predicates[table_name] + join_predicates[table_name]
+            if table_name not in predicates:
+                predicates[table_name] = []
+            predicates[table_name] = list(set(predicates[table_name] + join_predicates[table_name]))
 
         if verbose:
-            print(f"Updated predicates: {self.predicates}")
+            print(f"Updated predicates: {predicates}")
 
         access_paths = {}
         for table_name in self.tables:
-            if table_name in self.predicates:
+            if table_name in predicates:
                 #table_predicate_cols = [pred['column'] for pred in predicates[table_name] if pred['join'] == False]
-                table_predicate_cols = [pred['column'] for pred in self.predicates[table_name]]
-            if table_name in self.payload:
-                table_payload_cols = [col for col in self.payload[table_name] if col in self.tables[table_name]]   
+                table_predicate_cols = [self.id2predicate[pred_id]['column'] for pred_id in predicates[table_name]]
+            if table_name in payload:
+                table_payload_cols = [col for col in payload[table_name] if col in self.tables[table_name]]   
             if table_name in join_predicates_temp:
                 join_predicate_cols = join_predicates_temp[table_name]
             else:
@@ -487,7 +499,7 @@ class SimpleCost:
                 for path in paths:
                     print(f"    {path}") 
 
-        return access_paths        
+        return access_paths, predicates        
 
 
 
@@ -532,7 +544,7 @@ class SimpleCost:
         # check if leading index column is in the predicates
         leading_index_column = index.index_columns[0]
         #print(f"\t\t\tTable predicates: {table_predicates}, Leading index column: {leading_index_column}")
-        predicate_columns = [pred['column'] for pred in table_predicates]
+        predicate_columns = [self.id2predicate[pred_id]['column'] for pred_id in table_predicates]
         
         if leading_index_column not in predicate_columns:
             # assign high cost to prevent using this index, sequential scan will be cheaper
@@ -541,7 +553,8 @@ class SimpleCost:
         # calculate the combined selectivity for this index (assuming attribute independence/no correlations of predicates)
         leading_column_selectivity = 1.0
         combined_selectivity = 1.0
-        for pred in table_predicates:
+        for pred_id in table_predicates:
+            pred = self.id2predicate[pred_id]
             if pred['column'] in index.index_columns and pred['join'] == False:
                 selectivity = self.estimate_selectivity(pred['column'], pred['operator'], pred['value'], table_stats_dict, total_rows)
                 if verbose: print(f"\t\tSelectivity for predicate {pred}: {selectivity}")
