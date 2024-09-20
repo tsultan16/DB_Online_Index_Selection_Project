@@ -13,6 +13,7 @@ if module_path not in sys.path:
 
 from pg_utils import *
 from ssb_qgen_class import *
+from simple_cost_model import *
 
 from collections import defaultdict, deque
 import time
@@ -42,17 +43,33 @@ class Node:
 # class for creating and storing the IBG
 class IBG:
     # Class-level cache
-    #_class_cache = {}
+    _stats_cache = None
+    _estimated_rows_cache = None
 
-    def __init__(self, query_object, C, existing_indexes=[], execution_cost_scaling=1e-6,ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True):
+    def __init__(self, query_object, C, existing_indexes=[], execution_cost_scaling=1e-6, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, simple_cost=False):
         self.q = query_object
         self.C = C
         self.existing_indexes = existing_indexes # indexes currently materialized in the database
         self.execution_cost_scaling = execution_cost_scaling
         self.normalize_doi = normalize_doi
+        self.simple_cost = simple_cost
         print(f"Number of candidate indexes: {len(self.C)}")
         #print(f"Candidate indexes: {self.C}")
         
+        if self.simple_cost:
+            if IBG._stats_cache is None:
+                # Get the statistics for all tables in the SSB database
+                table_names = ["customer", "dwdate", "lineorder", "part", "supplier"]
+                stats = {}
+                estimated_rows = {}
+                for table_name in table_names:
+                    stats[table_name], estimated_rows[table_name] = get_table_stats(table_name)
+
+                IBG._stats_cache = stats
+                IBG._estimated_rows_cache = estimated_rows
+
+            self.simple_cost_model = SimpleCost(IBG._stats_cache, IBG._estimated_rows_cache, index_scan_cost_multiplier=2.0)
+
         # create a connection session to the database
         self.conn = create_connection()
         # get hypothetical sizes of all the candidate indexes
@@ -78,9 +95,13 @@ class IBG:
         self.node_count = 0
 
         # start the IBG construction
+        start_time = time.time()
         print("Constructing IBG...")
         self.construct_ibg(self.root, max_nodes=ibg_max_nodes)
-        print(f"Number of nodes in IBG: {len(self.nodes)}, Total number of what-if calls: {self.total_whatif_calls}, Time spent on what-if calls: {self.total_whatif_time}")
+        end_time = time.time()
+        ibg_construction_time = end_time - start_time
+        print(f"Number of nodes in IBG: {len(self.nodes)}, Total number of what-if calls: {self.total_whatif_calls}, Time spent on what-if calls: {self.total_whatif_time}, IBG construction time: {ibg_construction_time}")
+
         # compute all pair degree of interaction
         print(f"Computing all pair degree of interaction...")
         start_time = time.time()
@@ -91,7 +112,6 @@ class IBG:
         #print(f"All pair doi:")
         #for key, value in self.doi.items():
         #    print(f"{key}: {value}")
-        
         end_time = time.time()
         print(f"Time spent on computing all pair degree of interaction: {end_time - start_time}")
 
@@ -112,15 +132,11 @@ class IBG:
         hypo_indexes = bulk_create_hypothetical_indexes(self.conn, self.C, return_size=True)
         for i in range(len(hypo_indexes)):
             self.C[i].size = hypo_indexes[i][1]
-        
+
+
     #@lru_cache(maxsize=None)
-    def _get_cost_used(self, indexes):
-        # Convert indexes to a tuple to make it hashable
-        #indexes_tuple = tuple(sorted(indexes, key=lambda x: x.index_id))
-        # Check if the result is already in the class-level cache
-        #if indexes_tuple in self._class_cache:
-        #    return self._class_cache[indexes_tuple]
-        
+    def _get_cost_used_1(self, indexes):
+       
         start_time = time.time()
         if self.conn is None:
             conn = create_connection()
@@ -157,11 +173,22 @@ class IBG:
 
         return cost, used
 
+
+    def _get_cost_used_2(self, indexes):
+        indexes = {index.index_id:index for index in indexes}
+        cost, used = self.simple_cost_model.predict(self.q, indexes, verbose=False)
+        #print(f"Number of configuration indexes:{len(indexes)}, Cost: {cost}, Used indexes: {used}")
+        used = [self.idx2index[index_id] for index_id in used]
+        return cost, used
+
     # Ensure the indexes parameter is hashable
     def _cached_get_cost_used(self, indexes):
-        return self._get_cost_used(tuple(indexes))
-
+        if not self.simple_cost:
+            return self._get_cost_used_1(tuple(indexes))
+        else:
+            return self._get_cost_used_2(indexes)
     
+
     # IBG construction
     def construct_ibg(self, root, max_nodes=None):
         # Obtain query optimizer's cost and used indexes
@@ -175,7 +202,6 @@ class IBG:
         num_levels = 0
         queue = deque([root])
         while queue:
-
             if max_nodes is not None and self.node_count >= max_nodes:
                 break  # end if the maximum number of nodes is reached
             
@@ -230,7 +256,7 @@ class IBG:
         else:
             Y = self.find_covering_node(X)              
             cost, used = Y.cost, Y.used
-
+        
         return cost, used    
 
 
@@ -269,7 +295,19 @@ class IBG:
             # zero benefit if 'a' is already in X
             #raise ValueError("Index 'a' is already in X")
             return 0
-        
+        """
+        if self.simple_cost:
+            X_a = X + [a]
+            # get cost for X
+            cost_X = self._get_cost_used_2(X)[0]
+            # create a new configuration with index a added to X
+            # get cost for X + {a}
+            cost_X_a = self._get_cost_used_2(X_a)[0]
+            # compute benefit
+            benefit = cost_X - cost_X_a
+        """
+        #else:             
+
         # get cost  for X
         cost_X = self.get_cost_used(X)[0]
         # create a new configuration with index a added to X
@@ -278,12 +316,19 @@ class IBG:
         cost_X_a = self.get_cost_used(X_a)[0]
         # compute benefit
         benefit = cost_X - cost_X_a
+
         return benefit 
 
 
     # compute maximum benefit of adding an index to any possibe configuration
     def compute_max_benefit(self, a):
         max_benefit = float('-inf')
+
+        # separately compute empty set configuration benefit
+        #benefit = self.compute_benefit(a, [])
+        #if benefit > max_benefit:
+        #    max_benefit = benefit
+
         for id, node in self.nodes.items():
             #print(f"Computing benefit for node: {[index.index_id for index in node.indexes]}")
             benefit = self.compute_benefit(a, node.indexes)
@@ -550,12 +595,15 @@ def process_node_chunk(args):
 
 class WFIT:
 
-    def __init__(self, max_key_columns=None, include_cols=False, max_indexes_per_table=3, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, idxCnt=25, stateCnt=500, histSize=1000, rand_cnt=100, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1):
+    def __init__(self, max_key_columns=None, include_cols=False, simple_cost=False, max_indexes_per_table=3, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, idxCnt=25, stateCnt=500, histSize=1000, rand_cnt=100, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1):
         # bulk drop all materialized secondary indexes
         print(f"*** Dropping all materialized secondary indexes...")
         conn = create_connection()
         drop_all_indexes(conn)
         close_connection(conn)
+
+        if simple_cost:
+            print(f"*** Using simple cost model...")
 
         # initial set of materialzed indexes
         #self.pk_indexes = ssb_pk_index_objects() 
@@ -564,6 +612,8 @@ class WFIT:
         self.max_key_columns = max_key_columns
         # allow include columns in indexes
         self.include_cols = include_cols
+        # use simple cost model
+        self.simple_cost = simple_cost
         # maximum number of indexes to monitor
         self.max_U = max_U
         # maximum number of nodes in IBG
@@ -706,6 +756,7 @@ class WFIT:
         if verbose: 
             print(f"\nConfiguration materialization time: {config_materialization_time} s\n")
             print(f"{len(self.M)} currently materialized indexes: {[index.index_id for index in self.M.values()]}\n")
+            print(f"Total Configuration Size: {sum([index.size for index in self.M.values()])} MB\n")
 
         # restart the server before batch query execution
         #restart_postgresql()    
@@ -724,7 +775,10 @@ class WFIT:
                 execution_time /= 1000
                 batch_execution_time += execution_time
                 self.execution_time.append(execution_time)
-                if verbose: print(f"\tExecution_time: {execution_time} s, Indexes accessed: {list(index_access_info.keys())}\n")
+                if verbose:
+                    #print(f"Indexes accessed --> {index_access_info}")
+                    #print(f"Bitmap Heap Scans --> {bitmap_heapscan_info}") 
+                    print(f"\tExecution_time: {execution_time} s, Tables accessed: {list(set(table_access_info.keys()).union(bitmap_heapscan_info.keys()))}, Indexes accessed: {list(index_access_info.keys())}\n")
                 # update index usage stats
                 for index_id in index_access_info:
                     self.index_usage[index_id] += 1
@@ -1146,7 +1200,7 @@ class WFIT:
     
     # compute index benefit graph for the given query and candidate indexes
     def compute_IBG(self, query_object, candidate_indexes):
-        return IBG(query_object, candidate_indexes, existing_indexes=list(self.M.values()), execution_cost_scaling=self.execution_cost_scaling, ibg_max_nodes=self.ibg_max_nodes, doi_max_nodes=self.doi_max_nodes, max_doi_iters_per_node=self.max_doi_iters_per_node, normalize_doi=self.normalize_doi)
+        return IBG(query_object, candidate_indexes, existing_indexes=list(self.M.values()), execution_cost_scaling=self.execution_cost_scaling, ibg_max_nodes=self.ibg_max_nodes, doi_max_nodes=self.doi_max_nodes, max_doi_iters_per_node=self.max_doi_iters_per_node, normalize_doi=self.normalize_doi, simple_cost=self.simple_cost)
     
 
     # extract candidate indexes from given query
@@ -1446,6 +1500,7 @@ class WFIT:
 
             score[index.index_id] = current_benefit + creation_cost_term
             #if verbose: print(f"\tIndex {index.index_id}: current benefit: {current_benefit}, creation penalty: {creation_cost_term}, score: {score[index.index_id]}")
+            print(f"\tIndex {index.index_id}: current benefit: {current_benefit}, creation penalty: {creation_cost_term}, score: {score[index.index_id]}")
 
         top_indexes = [index_id for index_id, s in score.items()]  
         #top_indexes = sorted(top_indexes, key=lambda x: score[x], reverse=True)[:num_indexes]
@@ -1530,11 +1585,11 @@ class WFIT:
 
         top_indexes = {index.index_id: index for indexes in top_indexes_keep.values() for index in indexes}        
 
-        if verbose:
-            print(f"{len(top_indexes)} Top index scores:")
-            for index_id in top_indexes:
-                print(f"\tIndex {index_id}: {score[index_id]}")
-        
+        #if verbose:
+        print(f"{len(top_indexes)} Top index scores:")
+        for index_id in top_indexes:
+            print(f"\tIndex {index_id}: {score[index_id]}")
+    
             #print(f" top indexes: {[index.index_id for index in top_indexes.values()]}")
 
         return top_indexes    
