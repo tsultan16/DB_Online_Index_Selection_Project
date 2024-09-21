@@ -582,12 +582,13 @@ class SimpleCost:
         discount_factor = 1.0
         # add higher discount factor if leading columns is in join columns
         if leading_index_column in join_columns:
-            discount_factor *= 0.8
+            discount_factor *= 0.9
         # add lower discount factor if other key or include columns are in join columns
         other_columns = list(index.index_columns[1:]) + list(index.include_columns)
         for column in other_columns:
             if column in join_columns:
-                discount_factor *= 0.9
+                discount_factor *= 0.95
+                break # only apply discount once
 
         # return total cost as the sum of index and table pages
         undiscounted_index_scan_cost = cost_multiplier * (index_pages + table_pages) 
