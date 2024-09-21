@@ -68,7 +68,7 @@ class IBG:
                 IBG._stats_cache = stats
                 IBG._estimated_rows_cache = estimated_rows
 
-            self.simple_cost_model = SimpleCost(IBG._stats_cache, IBG._estimated_rows_cache, index_scan_cost_multiplier=2.0)
+            self.simple_cost_model = SimpleCost(IBG._stats_cache, IBG._estimated_rows_cache, index_scan_cost_multiplier=1.5)
 
         # create a connection session to the database
         self.conn = create_connection()
@@ -149,7 +149,7 @@ class IBG:
         for i in range(len(hypo_indexes)):
             oid2index[hypo_indexes[i]] = indexes[i]
         # get cost and used indexes
-        cost, indexes_used = get_query_cost_estimate_hypo_indexes(conn, self.q.query_string, show_plan=False)
+        cost, indexes_used = get_query_cost_estimate_hypo_indexes(conn, self.q.query_string, show_plan=False, get_secondary_indexes_used=True)
         # map used index oids to index objects
         used = []
         for oid, scan_type, scan_cost in indexes_used:
@@ -167,10 +167,8 @@ class IBG:
         self.total_whatif_time += end_time - start_time
 
         #print(f"Configuration: {[index.index_id for index in indexes]}, Cost: {cost}, Used indexes: {[index.index_id for index in used]}")
-
         # scale the execution cost
         cost *= self.execution_cost_scaling    
-
         return cost, used
 
 
@@ -178,6 +176,7 @@ class IBG:
         indexes = {index.index_id:index for index in indexes}
         cost, used = self.simple_cost_model.predict(self.q, indexes, verbose=False)
         #print(f"Number of configuration indexes:{len(indexes)}, Cost: {cost}, Used indexes: {used}")
+        cost *= self.execution_cost_scaling
         used = [self.idx2index[index_id] for index_id in used]
         return cost, used
 
@@ -1500,7 +1499,6 @@ class WFIT:
 
             score[index.index_id] = current_benefit + creation_cost_term
             #if verbose: print(f"\tIndex {index.index_id}: current benefit: {current_benefit}, creation penalty: {creation_cost_term}, score: {score[index.index_id]}")
-            print(f"\tIndex {index.index_id}: current benefit: {current_benefit}, creation penalty: {creation_cost_term}, score: {score[index.index_id]}")
 
         top_indexes = [index_id for index_id, s in score.items()]  
         #top_indexes = sorted(top_indexes, key=lambda x: score[x], reverse=True)[:num_indexes]
@@ -1585,11 +1583,11 @@ class WFIT:
 
         top_indexes = {index.index_id: index for indexes in top_indexes_keep.values() for index in indexes}        
 
-        #if verbose:
-        print(f"{len(top_indexes)} Top index scores:")
-        for index_id in top_indexes:
-            print(f"\tIndex {index_id}: {score[index_id]}")
-    
+        if verbose:
+            print(f"{len(top_indexes)} Top index scores:")
+            for index_id in top_indexes:
+                print(f"\tIndex {index_id}: {score[index_id]}")
+        
             #print(f" top indexes: {[index.index_id for index in top_indexes.values()]}")
 
         return top_indexes    
