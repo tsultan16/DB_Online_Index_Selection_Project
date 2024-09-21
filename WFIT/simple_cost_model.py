@@ -545,9 +545,10 @@ class SimpleCost:
         leading_index_column = index.index_columns[0]
         #print(f"\t\t\tTable predicates: {table_predicates}, Leading index column: {leading_index_column}")
         predicate_columns = [self.id2predicate[pred_id]['column'] for pred_id in table_predicates]
-        
+        join_columns = [self.id2predicate[pred_id]['column'] for pred_id in table_predicates if self.id2predicate[pred_id]['join'] == True]
+
         if leading_index_column not in predicate_columns:
-            # assign high cost to prevent using this index, sequential scan will be cheaper
+            # assign high cost to prevent using this index if the leading index column is not in the predicates, sequential scan will be cheaper
             return float('inf')
         
         # calculate the combined selectivity for this index (assuming attribute independence/no correlations of predicates)
@@ -575,14 +576,30 @@ class SimpleCost:
             index_average_rows_per_page_table = self.table_avg_rows_per_page(table_stats_dict)
             table_pages = int(table_cardinality / index_average_rows_per_page_table)
         
+
+        # apply discount factor to scan cost for join columns being present in the index key or included columns
+        # (this is to encourage the use of indexes that cover join columns)
+        discount_factor = 1.0
+        # add higher discount factor if leading columns is in join columns
+        if leading_index_column in join_columns:
+            discount_factor *= 0.8
+        # add lower discount factor if other key or include columns are in join columns
+        other_columns = list(index.index_columns[1:]) + list(index.include_columns)
+        for column in other_columns:
+            if column in join_columns:
+                discount_factor *= 0.9
+
         # return total cost as the sum of index and table pages
-        index_scan_cost = (index_pages + table_pages) * cost_multiplier
+        undiscounted_index_scan_cost = cost_multiplier * (index_pages + table_pages) 
+        discounted_index_scan_cost = discount_factor * undiscounted_index_scan_cost
+        
         if verbose: 
+            print(f"\tLeading column: {leading_index_column}, Predicate columns: {predicate_columns}, Join columns: {join_columns}")
             print(f"\tLeading column selectivity: {leading_column_selectivity}, Combined selectivity: {combined_selectivity}")
             print(f"\tEstimated number of pages for index scan: {index_pages}, Table pages: {table_pages}")
-            print(f"\tIndex scan cost: {index_scan_cost}")
+            print(f"\tUndiscounted scan cost --> {undiscounted_index_scan_cost}, Discounted scan cost --> {discounted_index_scan_cost}, Discount factor --> {discount_factor}")
 
-        return index_scan_cost
+        return discounted_index_scan_cost
 
 
     def estimate_sequentail_scan_cost(self, table_stats_dict, total_rows, cost_multiplier=1.0, verbose=False):
@@ -630,8 +647,10 @@ class SimpleCost:
                 if cost < cheapest_cost:
                     cheapest_cost = cost
                     cheapest_access_path = path
+
             cheapest_table_access_path[table_name] = (cheapest_access_path, cheapest_cost)
             if verbose: print(f"\tCheapest access path: {cheapest_access_path}, Cost: {cheapest_cost}")
+        
         return cheapest_table_access_path
 
 
