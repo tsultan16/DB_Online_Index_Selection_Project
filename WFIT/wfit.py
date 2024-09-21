@@ -22,6 +22,8 @@ from more_itertools import powerset
 from itertools import chain
 from tqdm import tqdm
 import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+
 #from functools import lru_cache
 
 
@@ -68,7 +70,7 @@ class IBG:
                 IBG._stats_cache = stats
                 IBG._estimated_rows_cache = estimated_rows
 
-            self.simple_cost_model = SimpleCost(IBG._stats_cache, IBG._estimated_rows_cache, index_scan_cost_multiplier=1.5)
+            self.simple_cost_model = SimpleCost(IBG._stats_cache, IBG._estimated_rows_cache, index_scan_cost_multiplier=2.0) # 1.5)
 
         # create a connection session to the database
         self.conn = create_connection()
@@ -106,14 +108,15 @@ class IBG:
         print(f"Computing all pair degree of interaction...")
         start_time = time.time()
         #self.doi = self.compute_all_pair_doi()
-        self.doi = self.compute_all_pair_doi_parallel(num_workers=4, max_nodes=doi_max_nodes, max_iters_per_node=max_doi_iters_per_node)
+        self.doi = self.compute_all_pair_doi_parallel(num_workers=16, max_nodes=doi_max_nodes, max_iters_per_node=max_doi_iters_per_node)
         #self.doi = self.compute_all_pair_doi_simple()
-        #self.doi = self.compute_all_pair_doi_naive(num_samples=256)
+        #self.doi = self.compute_all_pair_doi_naive(num_samples=32)
+        #self.doi = self.compute_all_pair_doi_naive_parallel(num_samples=2, num_workers=16)
         #print(f"All pair doi:")
         #for key, value in self.doi.items():
         #    print(f"{key}: {value}")
         end_time = time.time()
-        print(f"Time spent on computing all pair degree of interaction: {end_time - start_time}")
+        print(f"\nTime spent on computing all pair degree of interaction: {end_time - start_time}\n")
 
         # unhide existing indexes
         bulk_unhide_indexes(self.conn, self.existing_indexes)
@@ -293,19 +296,7 @@ class IBG:
         if a in X:
             # zero benefit if 'a' is already in X
             #raise ValueError("Index 'a' is already in X")
-            return 0
-        """
-        if self.simple_cost:
-            X_a = X + [a]
-            # get cost for X
-            cost_X = self._get_cost_used_2(X)[0]
-            # create a new configuration with index a added to X
-            # get cost for X + {a}
-            cost_X_a = self._get_cost_used_2(X_a)[0]
-            # compute benefit
-            benefit = cost_X - cost_X_a
-        """
-        #else:             
+            return 0          
 
         # get cost  for X
         cost_X = self.get_cost_used(X)[0]
@@ -373,6 +364,7 @@ class IBG:
 
         return doi
 
+
     # Naive version of compute_all_pair_doi, with random sampling of configurations
     def compute_all_pair_doi_naive(self, num_samples=100):
         doi = {}
@@ -399,6 +391,47 @@ class IBG:
                         doi[key] = max(doi[key], d)
         
         return doi    
+
+
+    # Naive version of compute_all_pair_doi, with random sampling of configurations, parallelized
+    def compute_all_pair_doi_naive_parallel(self, num_samples=100, num_workers=8):
+        doi = {}
+        
+        # Initialize DOI dictionary with zero values
+        for i in range(len(self.C)):
+            for j in range(i + 1, len(self.C)):
+                doi[tuple(sorted((self.C[i].index_id, self.C[j].index_id)))] = 0
+
+        def compute_doi_for_sample(sample_index):
+            if sample_index == 0:
+                X = []
+            else:
+                X = random.sample(self.C, random.randint(1, len(self.C)))
+
+            local_doi = {}
+            for i in range(len(self.C)):
+                for j in range(i + 1, len(self.C)):
+                    a = self.C[i]
+                    b = self.C[j]
+                    if a not in X and b not in X:
+                        d = self.compute_doi_configuration(a, b, X)
+                        key = tuple(sorted((a.index_id, b.index_id)))
+                        if key not in local_doi:
+                            local_doi[key] = d
+                        else:
+                            local_doi[key] = max(local_doi[key], d)
+            return local_doi
+
+        # Use ThreadPoolExecutor for parallel execution with a specified number of workers
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(compute_doi_for_sample, i): i for i in range(num_samples)}
+            for future in tqdm(as_completed(futures), total=num_samples, desc="Sampling configurations"):
+                local_doi = future.result()
+                for key, value in local_doi.items():
+                    doi[key] = max(doi[key], value)
+
+        return doi
+
 
     # original version of compute_all_pair_doi, with optional max_nodes parameter for random sampling of nodes for efficient approximation
     def compute_all_pair_doi(self, max_nodes=None):
@@ -593,6 +626,7 @@ def process_node_chunk(args):
 """
 
 class WFIT:
+    database_size_cache = None
 
     def __init__(self, max_key_columns=None, include_cols=False, simple_cost=False, max_indexes_per_table=3, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, idxCnt=25, stateCnt=500, histSize=1000, rand_cnt=100, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1):
         # bulk drop all materialized secondary indexes
@@ -600,6 +634,16 @@ class WFIT:
         conn = create_connection()
         drop_all_indexes(conn)
         close_connection(conn)
+
+        # get database size
+        if WFIT.database_size_cache is None:
+            conn = create_connection()
+            WFIT.database_size_cache = get_database_size(conn)
+            close_connection(conn)
+        else:
+            print("Found database size in cache")    
+        self.database_size = WFIT.database_size_cache    
+        print(f"Database size: {self.database_size} MB")
 
         if simple_cost:
             print(f"*** Using simple cost model...")
@@ -716,17 +760,35 @@ class WFIT:
                 print(f"\nProcessing query ({i+1}/{len(query_objects)})...")
                 print('----------------------------------------------------')
 
+            start_time_2 = time.time()
             self.n_pos += 1        
             # generate new partitions 
             if verbose: print(f"Generating new partitions for query #{self.n_pos}")
+            start_time_1 = time.time()
             new_partitions, need_to_repartition, ibg = self.choose_candidates(self.n_pos, query_object, remove_stale_U, remove_stale_freq, verbose=verbose)
+            end_time_1 = time.time()
+            partitioning_time = end_time_1 - start_time_1
             # repartition if necessary
+            start_time_1 = time.time()
             if need_to_repartition:
                 if verbose: print(f"\nRepartitioning...\n")
                 self.repartition(new_partitions, verbose=False)
+
+            end_time_1 = time.time()
+            repartitioning_time = end_time_1 - start_time_1
             # analyze the query and get recommendation
             if verbose: print(f"\n\nAnalyzing...\n")
+            start_time_1 = time.time()
             all_indexes_added, all_indexes_removed = self.analyze_query(query_object, ibg, verbose=verbose)
+            end_time_1 = time.time()
+            analysis_time = end_time_1 - start_time_1
+            end_time_2 = time.time()
+            if verbose: 
+                print(f"\nPartitioning time: {partitioning_time} s")
+                print(f"Repartitioning time: {repartitioning_time} s")
+                print(f"WFA update time: {analysis_time} s")
+                print(f"Total recommendation time for query: {end_time_2 - start_time_2} s\n")
+
             if verbose:
                 print(f"Recommendation Indexes added:   {[index.index_id for index in all_indexes_added]}")
                 print(f"Recommendation Indexes removed: {[index.index_id for index in all_indexes_removed]}")
@@ -1123,7 +1185,8 @@ class WFIT:
             for X in wf.keys():
                 sorted_X = tuple(sorted(X, key=lambda x: x.index_id))
                 wf_term = wf[sorted_X]
-                query_cost_term = ibg.get_cost_used(list(sorted_X))[0] 
+                #query_cost_term = ibg.get_cost_used(list(sorted_X))[0] 
+                query_cost_term = ibg._get_cost_used_2(list(sorted_X))[0] # use simple cost model estimate
                 transition_cost_term = self.compute_transition_cost(sorted_X, sorted_Y) 
                 wf_value = wf_term + query_cost_term + transition_cost_term
                 #if verbose: print(f'\t\tValue for X = {tuple([index.index_id for index in sorted_X])} -->  {wf_value}  ({wf_term} + {query_cost_term} + {transition_cost_term})')
@@ -1595,8 +1658,8 @@ class WFIT:
 
     # return index creation cost (using estimated index size as proxy for cost)
     def get_index_creation_cost(self, index):
-        # return estimated size of index
-        return index.size * self.creation_cost_fudge_factor  
+        # return estimated size of index (normalize by size of database)
+        return self.creation_cost_fudge_factor * index.size / self.database_size  
 
 
     # compute transition cost between two MTS states/configurations
