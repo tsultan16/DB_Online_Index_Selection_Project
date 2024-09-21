@@ -567,14 +567,14 @@ class SimpleCost:
         index_cardinality = leading_column_selectivity * total_rows
         # estimate the number of pages that need to be accessed
         avg_rows_per_page = self.index_average_rows_per_page(index, table_stats_dict)
-        index_pages = int(index_cardinality / avg_rows_per_page)
+        index_pages = max(1, int(index_cardinality / avg_rows_per_page))
         
         table_pages = 0
         if not index_only_scan: 
             table_cardinality = combined_selectivity * total_rows
             # for index scan, we need to access the table as well
             index_average_rows_per_page_table = self.table_avg_rows_per_page(table_stats_dict)
-            table_pages = int(table_cardinality / index_average_rows_per_page_table)
+            table_pages = max(1, int(table_cardinality / index_average_rows_per_page_table))
         
 
         # apply discount factor to scan cost for join columns being present in the index key or included columns
