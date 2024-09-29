@@ -933,6 +933,169 @@ def tpch_pk_index_objects():
     return pk_indexes    
 
 
+# returns SSB schema as a dictionary
+def get_ssb_schema():
+    tables = {
+        "lineorder": [
+            ("lo_orderkey", "INT"),
+            ("lo_linenumber", "INT"),
+            ("lo_custkey", "INT"),
+            ("lo_partkey", "INT"),
+            ("lo_suppkey", "INT"),
+            ("lo_orderdate", "DATE"),
+            ("lo_orderpriority", "CHAR(15)"),
+            ("lo_shippriority", "CHAR(1)"),
+            ("lo_quantity", "INT"),
+            ("lo_extendedprice", "DECIMAL(18,2)"),
+            ("lo_ordtotalprice", "DECIMAL(18,2)"),
+            ("lo_discount", "DECIMAL(18,2)"),
+            ("lo_revenue", "DECIMAL(18,2)"),
+            ("lo_supplycost", "DECIMAL(18,2)"),
+            ("lo_tax", "INT"),
+            ("lo_commitdate", "DATE"),
+            ("lo_shipmode", "CHAR(10)")
+        ],
+        "part": [
+            ("p_partkey", "INT"),
+            ("p_name", "VARCHAR(22)"),
+            ("p_mfgr", "CHAR(6)"),
+            ("p_category", "CHAR(7)"),
+            ("p_brand", "CHAR(9)"),
+            ("p_color", "VARCHAR(11)"),
+            ("p_type", "VARCHAR(25)"),
+            ("p_size", "INT"),
+            ("p_container", "CHAR(15)")
+        ],
+        "supplier": [
+            ("s_suppkey", "INT"),
+            ("s_name", "CHAR(25)"),
+            ("s_address", "VARCHAR(25)"),
+            ("s_city", "CHAR(10)"),
+            ("s_nation", "CHAR(15)"),
+            ("s_region", "CHAR(12)"),
+            ("s_phone", "CHAR(20)")
+        ],
+        "customer": [
+            ("c_custkey", "INT"),
+            ("c_name", "VARCHAR(25)"),
+            ("c_address", "VARCHAR(25)"),
+            ("c_city", "CHAR(10)"),
+            ("c_nation", "CHAR(15)"),
+            ("c_region", "CHAR(12)"),
+            ("c_phone", "CHAR(15)"),
+            ("c_mktsegment", "CHAR(12)")
+        ],
+        "dwdate": [
+            ("d_datekey", "DATE"),
+            ("d_date", "CHAR(18)"),
+            ("d_dayofweek", "CHAR(9)"),
+            ("d_month", "CHAR(9)"),
+            ("d_year", "INT"),
+            ("d_yearmonthnum", "INT"),
+            ("d_yearmonth", "CHAR(7)"),
+            ("d_daynuminweek", "INT"),
+            ("d_daynuminmonth", "INT"),
+            ("d_daynuminyear", "INT"),
+            ("d_monthnuminyear", "INT"),
+            ("d_weeknuminyear", "INT"),
+            ("d_sellingseason", "CHAR(12)"),
+            ("d_lastdayinweekfl", "BIT"),
+            ("d_lastdayinmonthfl", "BIT"),
+            ("d_holidayfl", "BIT"),
+            ("d_weekdayfl", "BIT")
+        ]
+    }
+
+    pk_columns = {"lineorder": ["lo_orderkey", "lo_linenumber"], "part": ["p_partkey"], "supplier": ["s_suppkey"], "customer": ["c_custkey"], "dwdate": ["d_datekey"]}
+
+    return tables, pk_columns
+
+
+def get_tpch_schema():
+    tables = {
+    "customer": [
+        ("c_custkey", "INT"),
+        ("c_name", "VARCHAR(25)"),
+        ("c_address", "VARCHAR(40)"),
+        ("c_nationkey", "INT"),
+        ("c_phone", "CHAR(15)"),
+        ("c_acctbal", "DECIMAL(15, 2)"),
+        ("c_mktsegment", "CHAR(10)"),
+        ("c_comment", "VARCHAR(117)")
+    ],
+    "orders": [
+        ("o_orderkey", "INT"),
+        ("o_custkey", "INT"),
+        ("o_orderstatus", "CHAR(1)"),
+        ("o_totalprice", "DECIMAL(15, 2)"),
+        ("o_orderdate", "DATE"),
+        ("o_orderpriority", "CHAR(15)"),
+        ("o_clerk", "CHAR(15)"),
+        ("o_shippriority", "INT"),
+        ("o_comment", "VARCHAR(79)")
+    ],
+    "lineitem": [
+        ("l_orderkey", "INT"),
+        ("l_partkey", "INT"),
+        ("l_suppkey", "INT"),
+        ("l_linenumber", "INT"),
+        ("l_quantity", "DECIMAL(15, 2)"),
+        ("l_extendedprice", "DECIMAL(15, 2)"),
+        ("l_discount", "DECIMAL(15, 2)"),
+        ("l_tax", "DECIMAL(15, 2)"),
+        ("l_returnflag", "CHAR(1)"),
+        ("l_linestatus", "CHAR(1)"),
+        ("l_shipdate", "DATE"),
+        ("l_commitdate", "DATE"),
+        ("l_receiptdate", "DATE"),
+        ("l_shipinstruct", "CHAR(25)"),
+        ("l_shipmode", "CHAR(10)"),
+        ("l_comment", "VARCHAR(44)")
+    ],
+    "part": [
+        ("p_partkey", "INT"),
+        ("p_name", "VARCHAR(55)"),
+        ("p_mfgr", "CHAR(25)"),
+        ("p_brand", "CHAR(10)"),
+        ("p_type", "VARCHAR(25)"),
+        ("p_size", "INT"),
+        ("p_container", "CHAR(10)"),
+        ("p_retailprice", "DECIMAL(15, 2)"),
+        ("p_comment", "VARCHAR(23)")
+    ],
+    "supplier": [
+        ("s_suppkey", "INT"),
+        ("s_name", "CHAR(25)"),
+        ("s_address", "VARCHAR(40)"),
+        ("s_nationkey", "INT"),
+        ("s_phone", "CHAR(15)"),
+        ("s_acctbal", "DECIMAL(15, 2)"),
+        ("s_comment", "VARCHAR(101)")
+    ],
+    "partsupp": [
+        ("ps_partkey", "INT"),
+        ("ps_suppkey", "INT"),
+        ("ps_availqty", "INT"),
+        ("ps_supplycost", "DECIMAL(15, 2)"),
+        ("ps_comment", "VARCHAR(199)")
+    ],
+    "nation": [
+        ("n_nationkey", "INT"),
+        ("n_name", "CHAR(25)"),
+        ("n_regionkey", "INT"),
+        ("n_comment", "VARCHAR(152)")
+    ],
+    "region": [
+        ("r_regionkey", "INT"),
+        ("r_name", "CHAR(25)"),
+        ("r_comment", "VARCHAR(152)")
+    ]
+    }
+
+    pk_columns = {"customer": ["c_custkey"], "orders": ["o_orderkey"], "lineitem": ["l_orderkey", "l_linenumber"], "part": ["p_partkey"], "supplier": ["s_suppkey"], "partsupp": ["ps_partkey", "ps_suppkey"], "nation": ["n_nationkey"], "region": ["r_regionkey"]}
+
+    return tables, pk_columns
+
 
 
 
