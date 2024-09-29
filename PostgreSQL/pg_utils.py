@@ -867,29 +867,30 @@ def extract_query_indexes(query_object, max_key_columns=None, include_cols=False
                 # remove payload columns that intersect with key columns
                 payload_columns_filtered = tuple(set(payload_cols) - set(index_key_cols))
                 # don't create indexes on the same columns as primary clustered indexes
-                if (exclude_pk_indexes and (list(pk_index.index_columns) != list(index_key_cols))) or not exclude_pk_indexes:
-                    index_id = get_index_id(index_key_cols, table)
-                    if index_id not in candidate_indexes:
-                        index = Index(table, index_id, index_key_cols)
-                        if len(index_key_cols) == len(predicate_cols):
-                            index.cluster = table + '_' + str(query_object.template_id) + '_all' 
-                            if len(payload_columns_filtered) == 0:
-                                index.is_include = True
-                        candidate_indexes[index_id] = index
-                    
-                if include_cols:
-                    for j in range(1, len(payload_columns_filtered)+1):
-                        for index_include_cols in itertools.combinations(payload_columns_filtered, j):
-                            # remove include columns that intersect with key columns
-                            if index_include_cols:
-                                index_id = get_index_id(index_key_cols, table, index_include_cols)
-                                if index_id not in candidate_indexes:
-                                    index = Index(table, index_id, index_key_cols, index_include_cols)  
-                                    if len(index_key_cols) == len(predicate_cols):
-                                        index.cluster = table + '_' + str(query_object.template_id) + '_all' 
-                                        if len(index_include_cols) == len(payload_columns_filtered):
-                                            index.is_include = True
-                                    candidate_indexes[index_id] = index
+                if exclude_pk_indexes:
+                    if len(set(index_key_cols) - set(pk_index.index_columns)) != 0: 
+                        index_id = get_index_id(index_key_cols, table)
+                        if index_id not in candidate_indexes:
+                            index = Index(table, index_id, index_key_cols)
+                            if len(index_key_cols) == len(predicate_cols):
+                                index.cluster = table + '_' + str(query_object.template_id) + '_all' 
+                                if len(payload_columns_filtered) == 0:
+                                    index.is_include = True
+                            candidate_indexes[index_id] = index
+                        
+                            if include_cols:
+                                for j in range(1, len(payload_columns_filtered)+1):
+                                    for index_include_cols in itertools.combinations(payload_columns_filtered, j):
+                                        # remove include columns that intersect with key columns
+                                        if index_include_cols:
+                                            index_id = get_index_id(index_key_cols, table, index_include_cols)
+                                            if index_id not in candidate_indexes:
+                                                index = Index(table, index_id, index_key_cols, index_include_cols)  
+                                                if len(index_key_cols) == len(predicate_cols):
+                                                    index.cluster = table + '_' + str(query_object.template_id) + '_all' 
+                                                    if len(index_include_cols) == len(payload_columns_filtered):
+                                                        index.is_include = True
+                                                candidate_indexes[index_id] = index
 
     candidate_indexes = list(candidate_indexes.values())
 
