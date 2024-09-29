@@ -117,7 +117,7 @@ class SimpleCost:
             raise ValueError("Data type not supported, needs to be either numeric or char")
 
 
-    def estimate_selectivity_one_sided_range(self, attribute, boundary_value, operator, stats_dict, total_rows):
+    def estimate_selectivity_one_sided_range(self, attribute, boundary_value, operator, stats_dict, total_rows, index_columns=[], include_columns=[]):
         data_type = self.data_type_dict[attribute]
         # Get the column statistics
         stats = stats_dict[attribute]
@@ -125,6 +125,64 @@ class SimpleCost:
         n_distinct = stats['n_distinct']
         most_common_vals = stats['most_common_vals']
         most_common_freqs = stats['most_common_freqs']
+
+        # check if the boundary value is itself an attribute
+        if boundary_value in stats_dict:
+            #print(f"Boundary value is an attribute: {boundary_value}")
+            #print(f"Index columns: {index_columns}, Include columns: {include_columns}")
+
+            # if boundary value attribute is not an index or include column, selectivity is 1.0
+            if boundary_value not in index_columns and boundary_value not in include_columns:
+                return 1.0
+    
+            boundary_value_stats = stats_dict[boundary_value]
+            boundary_histogram_bounds = boundary_value_stats['histogram_bounds']
+            boundary_most_common_vals = boundary_value_stats['most_common_vals']
+            boundary_most_common_freqs = boundary_value_stats['most_common_freqs']
+
+            # Convert boundary attribute's most common values to list
+            if boundary_most_common_vals:
+                boundary_most_common_vals = self.convert_string_to_list(boundary_most_common_vals, data_type)
+
+            # Estimate selectivity based on most common values
+            selectivity = 0.0
+            if most_common_vals and boundary_most_common_vals:
+                for val, freq in zip(most_common_vals, most_common_freqs):
+                    for boundary_val, boundary_freq in zip(boundary_most_common_vals, boundary_most_common_freqs):
+                        if (operator == '<' and val < boundary_val) or (operator == '>' and val > boundary_val):
+                            selectivity += freq * boundary_freq
+
+            # Normalize selectivity by total rows
+            selectivity /= total_rows
+
+            # Use histograms to refine selectivity estimate
+            if histogram_bounds and boundary_histogram_bounds:
+                histogram_bounds = self.convert_string_to_list(histogram_bounds, data_type)
+                boundary_histogram_bounds = self.convert_string_to_list(boundary_histogram_bounds, data_type)
+
+                total_bins = len(histogram_bounds) - 1
+                boundary_total_bins = len(boundary_histogram_bounds) - 1
+
+                for i in range(total_bins):
+                    bin_lower_bound = histogram_bounds[i]
+                    bin_upper_bound = histogram_bounds[i + 1]
+
+                    for j in range(boundary_total_bins):
+                        boundary_bin_lower_bound = boundary_histogram_bounds[j]
+                        boundary_bin_upper_bound = boundary_histogram_bounds[j + 1]
+
+                        if (operator == '<' and bin_upper_bound < boundary_bin_lower_bound) or (operator == '>' and bin_lower_bound > boundary_bin_upper_bound):
+                            overlap_fraction = 1.0 / (total_bins * boundary_total_bins)
+                            selectivity += overlap_fraction
+
+            # Ensure selectivity is between 0 and 1
+            selectivity = max(0.0, min(selectivity, 1.0))
+
+            return selectivity
+    
+
+        if data_type == 'numeric':
+            boundary_value = float(boundary_value)
 
         # Convert most_common_values string to list of correct data type
         if most_common_vals:
@@ -146,10 +204,14 @@ class SimpleCost:
 
         # Check for overlap with most common values
         if most_common_vals:
+            #print(f"Attribute: {attribute}, data type: {data_type}")
+            #print(f"Most common values: {most_common_vals}")
+            #print(f"Most common frequencies: {most_common_freqs}")
+            #print(f"Boundary value: {boundary_value}")
             for val, freq in zip(most_common_vals, most_common_freqs):
                 if (operator == '>' and val > boundary_value) or (operator == '<' and val < boundary_value):
                     selectivity += freq
-                elif (operator == '>=' and val >= boundary_value) or (operator == '<=' and val <= boundary_value):
+                elif (operator == '>=' and (val > boundary_value or val == boundary_value)) or (operator == '<=' and (val < boundary_value or val == boundary_value)):
                     selectivity += freq    
 
         if histogram_bounds is not None:
@@ -192,7 +254,8 @@ class SimpleCost:
                         # Accumulate to the total selectivity
                         selectivity += overlap_fraction * (1.0 / total_bins)
 
-
+        # make sure selectivity is between 0 and 1
+        selectivity = max(0.0, min(selectivity, 1.0))
 
         if selectivity == 0.0:
             # If no overlap with most common values or histogram bins, assume uniform distribution and estimate selectivity
@@ -211,6 +274,8 @@ class SimpleCost:
         most_common_vals = stats['most_common_vals']
         most_common_freqs = stats['most_common_freqs']
 
+        if data_type == 'numeric':
+            value_range = [float(x) for x in value_range]
 
         #print(f"Histogram bounds: {histogram_bounds}")
         #print(f"Most common values: {most_common_vals}")
@@ -283,6 +348,8 @@ class SimpleCost:
                     # Assume each bin represents an equal fraction of the total rows
                     selectivity += overlap_fraction * (1.0 / total_bins)
 
+        # make sure selectivity is between 0 and 1
+        selectivity = max(0.0, min(selectivity, 1.0))
 
         if selectivity == 0.0:
             # if no overlap with most common values or histogram bins, assume uniform distribution and estimate selectivity
@@ -300,6 +367,9 @@ class SimpleCost:
         n_distinct = stats['n_distinct']
         most_common_vals = stats['most_common_vals']
         most_common_freqs = stats['most_common_freqs']
+
+        if data_type == 'numeric':
+            value = float(value)
 
         # convert most_common_values string to list of correct data type
         if most_common_vals:
@@ -358,6 +428,84 @@ class SimpleCost:
                         selectivity = 1.0 / total_bins
                         break        
 
+        # make sure selectivity is between 0 and 1
+        selectivity = max(0.0, min(selectivity, 1.0))
+
+        return selectivity
+
+
+    def estimate_selectivity_neq(self, attribute, value, stats_dict):
+        # Use the existing equality selectivity estimation
+        equality_selectivity = self.estimate_selectivity_eq(attribute, value, stats_dict)
+        
+        # Calculate the selectivity for the != predicate
+        selectivity = 1.0 - equality_selectivity
+
+        return selectivity
+
+
+    def estimate_selectivity_like(self, attribute, pattern, stats_dict):
+        # make sure that the attribute is of type char
+        data_type = self.data_type_dict[attribute]
+        if data_type != 'char':
+            raise ValueError(f"Attribute '{attribute}' is not of type 'char'. Can't estimate LIKE selectivity.")
+
+        stats = stats_dict[attribute]
+        n_distinct = stats['n_distinct']
+        most_common_vals = stats['most_common_vals']
+        most_common_freqs = stats['most_common_freqs']
+
+        # Convert most_common_values string to list of correct data type
+        if most_common_vals:
+            most_common_vals = self.convert_string_to_list(most_common_vals, data_type)
+
+        # Determine the type of LIKE pattern
+        if pattern.startswith('%') and pattern.endswith('%'):
+            # Pattern is of the form "%string%"
+            pattern_type = 'contains'
+        elif pattern.startswith('%'):
+            # Pattern is of the form "%string"
+            pattern_type = 'ends_with'
+        elif pattern.endswith('%'):
+            # Pattern is of the form "string%"
+            pattern_type = 'starts_with'
+        else:
+            # Exact match, should be handled by equality selectivity
+            return self.estimate_selectivity_eq(attribute, pattern, stats_dict)
+
+        # Estimate selectivity based on pattern type
+        if pattern_type == 'contains':
+            # Assume a lower selectivity due to potential matches anywhere in the string
+            selectivity = 0.1 / n_distinct
+        elif pattern_type == 'starts_with':
+            # Assume a moderate selectivity as it matches from the beginning
+            selectivity = 0.2 / n_distinct
+        elif pattern_type == 'ends_with':
+            # Assume a moderate selectivity as it matches from the end
+            selectivity = 0.2 / n_distinct
+
+        # Adjust selectivity based on most common values
+        if most_common_vals:
+            for i, val in enumerate(most_common_vals):
+                if pattern_type == 'contains' and pattern.strip('%') in val:
+                    selectivity = max(selectivity, most_common_freqs[i])
+                elif pattern_type == 'starts_with' and val.startswith(pattern.strip('%')):
+                    selectivity = max(selectivity, most_common_freqs[i])
+                elif pattern_type == 'ends_with' and val.endswith(pattern.strip('%')):
+                    selectivity = max(selectivity, most_common_freqs[i])
+
+        # make sure selectivity is between 0 and 1
+        selectivity = max(0.0, min(selectivity, 1.0))
+
+        return selectivity
+
+
+    def estimate_selectivity_not_like(self, attribute, pattern, stats_dict):
+        # Use the existing LIKE selectivity estimation
+        like_selectivity = self.estimate_selectivity_like(attribute, pattern, stats_dict)
+        # Calculate the selectivity for the NOT LIKE predicate
+        selectivity = 1.0 - like_selectivity
+
         return selectivity
 
 
@@ -385,15 +533,33 @@ class SimpleCost:
         return combined_selectivity 
 
 
-    def estimate_selectivity(self, attribute, operator, value, stats_dict, total_rows):
-        if operator == 'eq':
+    def estimate_selectivity_not_in(self, attribute, value, stats_dict):
+        # Use the existing OR/IN selectivity estimation
+        in_selectivity = self.estimate_selectivity_or(attribute, value, stats_dict)        
+        # Calculate the selectivity for the NOT IN predicate
+        selectivity = 1.0 - in_selectivity
+
+        return selectivity
+
+
+    def estimate_selectivity(self, attribute, operator, value, stats_dict, total_rows, index_columns=None, include_columns=None):
+        operator = operator.lower()
+        if operator in ['eq', '=']:
             return self.estimate_selectivity_eq(attribute, value, stats_dict)
+        elif operator == 'neq':
+            return self.estimate_selectivity_neq(attribute, value, stats_dict)
         elif operator == 'range':
             return self.estimate_selectivity_range(attribute, value, stats_dict, total_rows)
         elif operator in ['>', '<', '>=', '<=']:
-            return self.estimate_selectivity_one_sided_range(attribute, value, operator, stats_dict, total_rows)
-        elif operator == 'or':
-            return self.estimate_selectivity_or(attribute, value, stats_dict)    
+            return self.estimate_selectivity_one_sided_range(attribute, value, operator, stats_dict, total_rows, index_columns, include_columns)
+        elif operator in ['or', 'in']:
+            return self.estimate_selectivity_or(attribute, value, stats_dict)   
+        elif operator == 'not in':
+            return self.estimate_selectivity_not_in(attribute, value, stats_dict) 
+        elif operator == 'like':
+            return self.estimate_selectivity_like(attribute, value, stats_dict)
+        elif operator == 'not like':
+            return self.estimate_selectivity_not_like(attribute, value, stats_dict)
         else:
             raise ValueError(f"Operator '{operator}' not supported, needs to be either 'eq', 'range', or 'or'")
             
@@ -405,8 +571,8 @@ class SimpleCost:
         for table_name in query_object.payload:
             self.tables[table_name] = query_object.payload[table_name]
 
-        print(f"Tables and columns: {self.tables}")
-        print(f"Query predicates: {query_object.predicates}")
+        #print(f"Tables and columns: {self.tables}")
+        #print(f"Query predicates: {query_object.predicates}")
 
         for table_name in query_object.predicates:
             if table_name not in self.tables:
@@ -599,7 +765,7 @@ class SimpleCost:
         for pred_id in table_predicates:
             pred = self.id2predicate[pred_id]
             if pred['column'] in index.index_columns and pred['join'] == False:
-                selectivity = self.estimate_selectivity(pred['column'], pred['operator'], pred['value'], table_stats_dict, total_rows)
+                selectivity = self.estimate_selectivity(pred['column'], pred['operator'], pred['value'], table_stats_dict, total_rows, index.index_columns, index.include_columns)
                 if verbose: print(f"\t\tSelectivity for predicate {pred}: {selectivity}")
                 combined_selectivity *= selectivity
                 if pred['column'] == leading_index_column:
@@ -624,12 +790,12 @@ class SimpleCost:
         discount_factor = 1.0
         # add higher discount factor if leading columns is in join columns
         if leading_index_column in join_columns:
-            discount_factor *= 0.9
+            discount_factor *= 0.8
         # add lower discount factor if other key or include columns are in join columns
         other_columns = list(index.index_columns[1:]) + list(index.include_columns)
         for column in other_columns:
             if column in join_columns:
-                discount_factor *= 0.95
+                discount_factor *= 0.9
                 #break # only apply discount once
 
         # return total cost as the sum of index and table pages
