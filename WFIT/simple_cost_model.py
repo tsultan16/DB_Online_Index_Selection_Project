@@ -79,6 +79,7 @@ class SimpleCost:
     def __init__(self, stats, estimated_rows, sequential_scan_cost_multiplier=1.0, index_scan_cost_multiplier=2.0, dbname='SSB10'):
         self.sequentail_scan_cost_multiplier = sequential_scan_cost_multiplier
         self.index_scan_cost_multiplier = index_scan_cost_multiplier 
+        self.dbname = dbname
         """    
         # Get the statistics for all tables in the SSB database
         self.table_names = ["customer", "dwdate", "lineorder", "part", "supplier"]
@@ -99,7 +100,7 @@ class SimpleCost:
 
         # create a dictionary and specify whether each attribute in each table is numeric or char
         self.data_type_dict = {}
-        for table_name in ["customer", "dwdate", "lineorder", "part", "supplier"]:
+        for table_name in database_tables.keys():
             for column_name, column_type in database_tables[table_name]:
                 if ("INT" in column_type) or ("DECIMAL" in column_type) or ("BIT" in column_type):
                     self.data_type_dict[column_name] = "numeric"
@@ -148,6 +149,8 @@ class SimpleCost:
             for val, freq in zip(most_common_vals, most_common_freqs):
                 if (operator == '>' and val > boundary_value) or (operator == '<' and val < boundary_value):
                     selectivity += freq
+                elif (operator == '>=' and val >= boundary_value) or (operator == '<=' and val <= boundary_value):
+                    selectivity += freq    
 
         if histogram_bounds is not None:
             histogram_bounds = self.convert_string_to_list(histogram_bounds, data_type)
@@ -168,12 +171,13 @@ class SimpleCost:
 
                 if data_type == 'numeric':
                     # Check for range overlap
-                    if (operator == '>' and boundary_value < bin_upper_bound) or (operator == '<' and boundary_value > bin_lower_bound):
+                    #if (operator == '>' and boundary_value < bin_upper_bound) or (operator == '<' and boundary_value > bin_lower_bound):
+                    if (operator in ['>', '>='] and boundary_value < bin_upper_bound) or (operator in ['<', '<='] and boundary_value > bin_lower_bound):
                         # Calculate the overlap fraction within this bin
-                        if operator == '>':
+                        if operator in ['>', '>=']:
                             overlap_min = max(boundary_value, bin_lower_bound)
                             overlap_fraction = (bin_upper_bound - overlap_min) / (bin_upper_bound - bin_lower_bound)
-                        else:  # operator == '<'
+                        else:  # operator in ['<', '<=']
                             overlap_max = min(boundary_value, bin_upper_bound)
                             overlap_fraction = (overlap_max - bin_lower_bound) / (bin_upper_bound - bin_lower_bound)
 
@@ -181,7 +185,8 @@ class SimpleCost:
                         selectivity += overlap_fraction * (1.0 / total_bins)
 
                 elif data_type == 'char':
-                    if (operator == '>' and boundary_value < bin_upper_bound) or (operator == '<' and boundary_value > bin_lower_bound):
+                    #if (operator == '>' and boundary_value < bin_upper_bound) or (operator == '<' and boundary_value > bin_lower_bound):
+                    if (operator in ['>', '>='] and boundary_value < bin_upper_bound) or (operator in ['<', '<='] and boundary_value > bin_lower_bound):
                         # assume the whole bin overlaps
                         overlap_fraction = 1.0
                         # Accumulate to the total selectivity
@@ -385,7 +390,7 @@ class SimpleCost:
             return self.estimate_selectivity_eq(attribute, value, stats_dict)
         elif operator == 'range':
             return self.estimate_selectivity_range(attribute, value, stats_dict, total_rows)
-        elif operator == '<' or operator == '>':
+        elif operator in ['>', '<', '>=', '<=']:
             return self.estimate_selectivity_one_sided_range(attribute, value, operator, stats_dict, total_rows)
         elif operator == 'or':
             return self.estimate_selectivity_or(attribute, value, stats_dict)    
@@ -400,11 +405,16 @@ class SimpleCost:
         for table_name in query_object.payload:
             self.tables[table_name] = query_object.payload[table_name]
 
+        print(f"Tables and columns: {self.tables}")
+        print(f"Query predicates: {query_object.predicates}")
+
         for table_name in query_object.predicates:
             if table_name not in self.tables:
-                self.tables[table_name] = []
-            self.tables[table_name] = list(set(self.tables[table_name] + query_object.predicates[table_name]))
-
+                self.tables[table_name] = []   
+            if self.dbname == 'SSB10':    
+                self.tables[table_name] = list(set(self.tables[table_name] + query_object.predicates[table_name]))
+            else:
+                self.tables[table_name] = list(set(self.tables[table_name] + list(query_object.predicates[table_name].keys())))
         # extract the payload
         payload = query_object.payload
         # extract the predicates
