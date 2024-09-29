@@ -28,9 +28,9 @@ def restart_postgresql(clear_cache=True, delay=1):
 
 
 # create connection to postgres DB
-def create_connection():
+def create_connection(dbname="SSB10"):
     connection_params = {
-        "dbname": "SSB10",
+        "dbname": dbname,
         "user": "tanzid",
         "host": "localhost",
         "port": "5433"
@@ -164,6 +164,7 @@ def get_primary_key_indexes(conn):
 
         # Fetch all results
         indexes = cur.fetchall()
+        #print(f"indexes: \n{indexes}")
 
         # Close the cursor and connection
         cur.close()
@@ -175,6 +176,11 @@ def get_primary_key_indexes(conn):
             if index_name.startswith("pk_"):
                 size_mb = size_b / (1024 * 1024)  # Convert bytes to megabytes
                 pk_indexes[index_name] = (index_oid, size_mb)
+            elif index_name.endswith("_pkey"):
+                size_mb = size_b / (1024 * 1024)
+                pk_indexes[index_name] = (index_oid, size_mb)
+
+        #print(f"Primary key indexes: {pk_indexes}")
 
         return pk_indexes
 
@@ -522,7 +528,7 @@ def list_hypothetical_indexes(conn):
 
 
 # get the estimated cost with hypothetical indexes
-def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False):
+def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False, get_secondary_indexes_used=False):
     """Analyzes a query to obtain the estimated cost and check usage of index scans."""
     cur = conn.cursor()
     try:
@@ -536,29 +542,36 @@ def get_query_cost_estimate_hypo_indexes(conn, query, show_plan=False):
 
         # Extract the total cost
         total_cost = plan_json[0]['Plan']['Total Cost']
-        # Check for index scan usage
-        indexes = find_index_scans(plan_json[0]['Plan'])
-        indexes_used = []
-        if len(indexes)>0:
-            #print("Indexes used in the query plan:")
-            for index_name, scan_type, scan_cost in indexes:
-                # only consider hypothetical index scans
-                if '<' in index_name:
-                    index_oid = int(index_name.split('<')[1].split('>')[0])
-                    indexes_used.append((index_oid, scan_type, scan_cost))
+        # get access path info 
+        table_access_info, index_access_info, bitmap_heapscan_info = extract_access_info(plan_json[0]['Plan'])
+        
+        if get_secondary_indexes_used:      
+            # Check for index scan usage
+            indexes = find_index_scans(plan_json[0]['Plan'])
+            indexes_used = []
+            if len(indexes)>0:
+                #print("Indexes used in the query plan:")
+                for index_name, scan_type, scan_cost in indexes:
+                    # only consider hypothetical index scans
+                    if '<' in index_name:
+                        index_oid = int(index_name.split('<')[1].split('>')[0])
+                        indexes_used.append((index_oid, scan_type, scan_cost))
+                        #print(f"Index: {index_name}, Type: {scan_type}, Cost: {scan_cost}")
+            #print(f"Find index scan info: {indexes}")
 
-        else:
-            print("No index scans were explicitly noted in the query plan.")
 
     except Exception as e:
         print(f"An error occurred while analyzing the query: {e}")
         total_cost = None
-        indexes_used = None
-
+        table_access_info, index_access_info, bitmap_heapscan_info = None, None, None
+        get_secondary_indexes_used = None
     finally:
         cur.close()
 
-    return total_cost, indexes_used  
+    if get_secondary_indexes_used:
+        return total_cost, indexes_used
+    else:
+        return total_cost, table_access_info, index_access_info, bitmap_heapscan_info
 
 
 # hypothetical query execution speedup due to a configuration change from X_old to X_new 
@@ -612,8 +625,8 @@ def bulk_hide_indexes(conn, index_objects):
     for index in index_objects:
         if index.current_oid is not None:
             hide_index(conn, index.current_oid)
-        else:
-            print(f"Index '{index.index_id}' has no OID (not materialized yet). Skipping...")
+        #else:
+        #    print(f"Index '{index.index_id}' has no OID (not materialized yet). Skipping...")
 
 
 # Unhides a previously hidden index using HypoPG.
@@ -636,8 +649,8 @@ def bulk_unhide_indexes(conn, index_objects):
     for index in index_objects:
         if index.current_oid is not None:
             unhide_index(conn, index.current_oid)        
-        else:
-            print(f"Index '{index.index_id}' has no OID (not materialized yet). Skipping...")
+        #else:
+        #    print(f"Index '{index.index_id}' has no OID (not materialized yet). Skipping...")
 
 
 
@@ -681,7 +694,10 @@ def extract_access_info(plan):
                 total_cost = current_node.get('Total Cost')
                 actual_rows = current_node.get('Actual Rows')
                 actual_startup_time = current_node.get('Actual Startup Time')
-                actual_total_time = current_node.get('Actual Total Time') * current_node.get('Actual Loops', 1)
+                if current_node.get('Actual Loops'):
+                    actual_total_time = current_node.get('Actual Total Time') * current_node.get('Actual Loops')
+                else:
+                    actual_total_time = current_node.get('Actual Total Time')    
                 table_name = current_node.get('Relation Name')      
                 shared_hit_blocks = current_node.get('Shared Hit Blocks')
                 shared_read_blocks = current_node.get('Shared Read Blocks')
@@ -696,7 +712,10 @@ def extract_access_info(plan):
                 scan_type = current_node.get('Node Type')
                 actual_rows = current_node.get('Actual Rows')
                 actual_startup_time = current_node.get('Actual Startup Time')
-                actual_total_time = current_node.get('Actual Total Time') * current_node.get('Actual Loops', 1)
+                if current_node.get('Actual Loops'):
+                    actual_total_time = current_node.get('Actual Total Time') * current_node.get('Actual Loops')
+                else:
+                    actual_total_time = current_node.get('Actual Total Time')  
                 table_name = current_node.get('Relation Name')      
                 shared_hit_blocks = current_node.get('Shared Hit Blocks')
                 shared_read_blocks = current_node.get('Shared Read Blocks')
@@ -712,7 +731,10 @@ def extract_access_info(plan):
                 total_cost = current_node.get('Total Cost')
                 actual_rows = current_node.get('Actual Rows')
                 actual_startup_time = current_node.get('Actual Startup Time')
-                actual_total_time = current_node.get('Actual Total Time') * current_node.get('Actual Loops', 1)
+                if current_node.get('Actual Loops'):
+                    actual_total_time = current_node.get('Actual Total Time') * current_node.get('Actual Loops')
+                else:
+                    actual_total_time = current_node.get('Actual Total Time')  
                 shared_hit_blocks = current_node.get('Shared Hit Blocks')
                 shared_read_blocks = current_node.get('Shared Read Blocks')
                 local_hit_blocks = current_node.get('Local Hit Blocks')
@@ -814,9 +836,14 @@ def get_index_id(index_cols, table_name, include_cols=()):
 # enumerate candidate indexes that could benefit a given query
 # TODO: option for max number of index key/include columns 
 # TODO: option for including group_by/order_by columns (since some queries may benefit from having sorted data inside indexes and avoid sorting)
-def extract_query_indexes(query_object, max_key_columns=None, include_cols=False, exclude_pk_indexes_ssb=True):
-    if exclude_pk_indexes_ssb:
-        pk_indexes = ssb_pk_index_objects()
+def extract_query_indexes(query_object, max_key_columns=None, include_cols=False, dbname='SSB10', exclude_pk_indexes=True):
+    if exclude_pk_indexes:
+        if dbname == 'SSB10':
+            pk_indexes = ssb_pk_index_objects()
+        elif dbname == 'tpch10':
+            pk_indexes = tpch_pk_index_objects()
+        else:
+            raise ValueError("Invalid database name")    
         pk_indexes = {index.table_name:index for index in pk_indexes}
     else:
         pk_indexes = {}
@@ -827,7 +854,7 @@ def extract_query_indexes(query_object, max_key_columns=None, include_cols=False
 
     candidate_indexes = {}
     for table in predicates:
-        if exclude_pk_indexes_ssb: pk_index = pk_indexes.get(table)
+        if exclude_pk_indexes: pk_index = pk_indexes.get(table)
         predicate_cols = predicates[table]
         payload_cols = payload[table] if table in payload else []
         # create permutations of the predicate columns
@@ -840,7 +867,7 @@ def extract_query_indexes(query_object, max_key_columns=None, include_cols=False
                 # remove payload columns that intersect with key columns
                 payload_columns_filtered = tuple(set(payload_cols) - set(index_key_cols))
                 # don't create indexes on the same columns as primary clustered indexes
-                if (exclude_pk_indexes_ssb and (list(pk_index.index_columns) != list(index_key_cols))) or not exclude_pk_indexes_ssb:
+                if (exclude_pk_indexes and (list(pk_index.index_columns) != list(index_key_cols))) or not exclude_pk_indexes:
                     index_id = get_index_id(index_key_cols, table)
                     if index_id not in candidate_indexes:
                         index = Index(table, index_id, index_key_cols)
@@ -887,6 +914,23 @@ def ssb_pk_index_objects():
         pk_indexes.append(index_object)
 
     return pk_indexes
+
+def tpch_pk_index_objects():
+    index_cols = {'lineitem': ['l_orderkey', 'l_linenumber'], 'customer': ['c_custkey'], 'supplier': ['s_suppkey'], 'part': ['p_partkey'], 'partsupp': ['ps_partkey', 'ps_suppkey'], 'orders': ['o_orderkey'], 'nation': ['n_nationkey'], 'region': ['r_regionkey']}
+    conn = create_connection(dbname="tpch10")
+    pk_index_info = get_primary_key_indexes(conn)
+    close_connection(conn)
+    pk_indexes = []
+    for table_name, index_columns in index_cols.items():
+        index_id = f"{table_name}_pkey"
+        index_object = Index(table_name, index_id, index_columns)
+        oid, size = pk_index_info.get(index_id)
+        index_object.current_oid = oid
+        index_object.size = size
+        index_object.is_primary = True
+        pk_indexes.append(index_object)
+
+    return pk_indexes    
 
 
 
