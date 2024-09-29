@@ -490,22 +490,31 @@ def parse_tpch_query_15(query):
 
 def parse_tpch_query_16(query):
     # Use regular expressions to extract predicate values
-    p_brand_match = re.search(r"p_brand\s*=\s*'([^']+)'", query)
-    p_container_match = re.search(r"p_container\s*=\s*'([^']+)'", query)
-    subquery_condition_match = re.search(r"0.2\s*\*\s*avg\(l_quantity\)", query)
+    p_brand_match = re.search(r"p_brand\s*<>\s*'([^']+)'", query)
+    p_type_match = re.search(r"p_type\s*not\s+like\s*'([^']+)%'", query)
+    p_size_match = re.search(r"p_size\s*in\s*\(([^)]+)\)", query)
+    subquery_condition_match = re.search(r"s_comment\s+like\s*'%([^']+)%'", query)
 
     # Extracted values
     p_brand_value = p_brand_match.group(1) if p_brand_match else None
-    p_container_value = p_container_match.group(1) if p_container_match else None
-    subquery_condition_value = "0.2 * avg(l_quantity)" if subquery_condition_match else None
+    p_type_value = p_type_match.group(1) if p_type_match else None
+    p_size_values = p_size_match.group(1).split(',') if p_size_match else []
+    subquery_condition_value = subquery_condition_match.group(1) if subquery_condition_match else None
 
     # Construct the predicate dictionary
     predicate_dict = {
         "part": [
-            {"column": "p_brand", "operator": "=", "value": f"'{p_brand_value}'", "join": False},
-            {"column": "p_container", "operator": "=", "value": f"'{p_container_value}'", "join": False},
-            {"column": "p_partkey", "operator": "=", "value": "l_partkey", "join": True},
+            {"column": "p_brand", "operator": "neq", "value": f"'{p_brand_value}'", "join": False},
+            {"column": "p_type", "operator": "not like", "value": f"'{p_type_value}%'", "join": False},
+            {"column": "p_size", "operator": "in", "value": p_size_values, "join": False},
+            {"column": "p_partkey", "operator": "=", "value": "ps_partkey", "join": True},
         ],
+        "partsupp": [
+            {"column": "ps_suppkey", "operator": "not in", "value": "subquery", "join": False},
+        ],
+        "supplier_subquery": [
+            {"column": "s_comment", "operator": "like", "value": f"'%{subquery_condition_value}%'", "join": False},
+        ]
     }
 
     return predicate_dict
