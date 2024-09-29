@@ -40,13 +40,13 @@ def parse_tpch_query_2(query):
     p_size_value = query[p_size_start:p_size_end].strip()
 
     # Extract p_type without regex
-    p_type_start = query.find("p_type LIKE '%' ||") + len("p_type LIKE '%' ||")
-    p_type_end = query.find("\n", p_type_start)
+    p_type_start = query.find("p_type LIKE '%' || '") + len("p_type LIKE '%' || '")
+    p_type_end = query.find("'", p_type_start)
     p_type_value = query[p_type_start:p_type_end].strip()
 
     # Extract r_name
-    r_name_start = query.find("r_name =") + len("r_name =")
-    r_name_end = query.find("\n", r_name_start)
+    r_name_start = query.find("r_name = '") + len("r_name = '")
+    r_name_end = query.find("'", r_name_start)
     r_name_value = query[r_name_start:r_name_end].strip()
 
     # Construct the predicate dictionary
@@ -69,6 +69,7 @@ def parse_tpch_query_2(query):
     }
     
     return predicate_dict
+
 
 def parse_tpch_query_3(query):
     # Use regular expressions to extract predicate values
