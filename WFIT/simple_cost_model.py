@@ -3,6 +3,8 @@
 
     This algorithms assumes that query execution cost is dominated by disk IO. It predicts the cheapest access path for each table in the query and also estimates the total number of pages accesed in each path.    
 
+    Can think of this simple cost model as a simplified version of the PostgreSQL query planner, or a kind of partial query planner. Partial in the sense that it only considers the access methods and does not care about all other operations that the query planner does.
+
 """
 
 import sys
@@ -24,16 +26,16 @@ from ssb_qgen_class import *
 def get_page_size():
     return 8192  # 8 KB
 
-def get_table_stats(table_name):
+def get_table_stats(table_name, dbname='SSB10'):
 
-    conn = create_connection()
+    conn = create_connection(dbname=dbname)
 
     cur = conn.cursor()
 
     try:
         # Execute the query to get the estimated number of rows in the table
         cur.execute(f"""
-                    SELECT reltuples::bigint AS estimated_rows
+                    SELECT reltuples AS estimated_rows
                     FROM pg_class
                     WHERE relname = '{table_name}';
                     """)
@@ -74,7 +76,7 @@ def get_table_stats(table_name):
 
 class SimpleCost:
 
-    def __init__(self, stats, estimated_rows, sequential_scan_cost_multiplier=1.0, index_scan_cost_multiplier=2.0):
+    def __init__(self, stats, estimated_rows, sequential_scan_cost_multiplier=1.0, index_scan_cost_multiplier=2.0, dbname='SSB10'):
         self.sequentail_scan_cost_multiplier = sequential_scan_cost_multiplier
         self.index_scan_cost_multiplier = index_scan_cost_multiplier 
         """    
@@ -87,15 +89,31 @@ class SimpleCost:
         """
         self.stats, self.estimated_rows = stats, estimated_rows
 
-        ssb_tables, pk_columns = get_ssb_schema()
+        if dbname == 'SSB10':
+            database_tables, pk_columns = get_ssb_schema()
+        elif dbname == 'tpch10':
+            database_tables, pk_columns = get_tpch_schema()
+        else:
+            raise ValueError("Database name not supported, needs to be either 'SSB10' or 'tpch10'")    
+
+
         # create a dictionary and specify whether each attribute in each table is numeric or char
         self.data_type_dict = {}
         for table_name in ["customer", "dwdate", "lineorder", "part", "supplier"]:
-            for column_name, column_type in ssb_tables[table_name]:
+            for column_name, column_type in database_tables[table_name]:
                 if ("INT" in column_type) or ("DECIMAL" in column_type) or ("BIT" in column_type):
                     self.data_type_dict[column_name] = "numeric"
                 else:
                     self.data_type_dict[column_name] = "char"
+
+
+    def convert_string_to_list(self, string, datatype='numeric'):
+        if datatype == 'numeric':
+            return [float(x) for x in string.strip('{}').split(',')]
+        elif datatype == 'char':
+            return [x.strip() for x in string.strip('{}').split(',')]
+        else:
+            raise ValueError("Data type not supported, needs to be either numeric or char")
 
 
     def estimate_selectivity_one_sided_range(self, attribute, boundary_value, operator, stats_dict, total_rows):
@@ -109,13 +127,16 @@ class SimpleCost:
 
         # Convert most_common_values string to list of correct data type
         if most_common_vals:
+            most_common_vals = self.convert_string_to_list(most_common_vals, data_type)
+            """
             if data_type == 'numeric':
                 most_common_vals = [float(x) for x in most_common_vals.strip('{}').split(',')]
             elif data_type == 'char':
                 most_common_vals = [x for x in most_common_vals.strip('{}').split(',')]
             else:
                 raise ValueError("Data type not supported, needs to be either numeric or char")
-
+            """
+        
         # Convert negative n_distinct to an absolute count
         if n_distinct < 0:
             n_distinct = -n_distinct * total_rows
@@ -129,13 +150,15 @@ class SimpleCost:
                     selectivity += freq
 
         if histogram_bounds is not None:
+            histogram_bounds = self.convert_string_to_list(histogram_bounds, data_type)
+            """
             if data_type == 'numeric':
                 histogram_bounds = [float(x) for x in histogram_bounds.strip('{}').split(',')]
             elif data_type == 'char':
                 histogram_bounds = [x for x in histogram_bounds.strip('{}').split(',')]
             else:
                 raise ValueError("Data type not supported, needs to be either numeric or char")
-
+            """
             total_bins = len(histogram_bounds) - 1
 
             # Iterate over bins, find overlapping bins
@@ -190,13 +213,15 @@ class SimpleCost:
 
         # convert most_common_values string to list of correct data type
         if most_common_vals:
+            most_common_vals = self.convert_string_to_list(most_common_vals, data_type)
+            """
             if data_type == 'numeric':
                 most_common_vals = [float(x) for x in most_common_vals.strip('{}').split(',')]
             elif data_type == 'char':
                 most_common_vals = [x for x in most_common_vals.strip('{}').split(',')]    
             else:
                 raise ValueError("Data type not supported, needs ot be either numeric or char")
-
+            """
         # Convert negative n_distinct to an absolute count
         if n_distinct < 0:
             n_distinct = -n_distinct * total_rows
@@ -212,13 +237,15 @@ class SimpleCost:
                     selectivity += freq    
 
         if histogram_bounds is not None:
+            histogram_bounds = self.convert_string_to_list(histogram_bounds, data_type)
+            """
             if data_type == 'numeric':
                 histogram_bounds = [float(x) for x in histogram_bounds.strip('{}').split(',')] # convert to list of integers
             elif data_type == 'char':
                 histogram_bounds = [x for x in histogram_bounds.strip('{}').split(',')]
             else:
                 raise ValueError("Data type not supported, needs ot be either numeric or char")    
-
+            """
             total_bins = len(histogram_bounds) - 1
 
             # iterate over bins, find overlapping bins
@@ -271,12 +298,15 @@ class SimpleCost:
 
         # convert most_common_values string to list of correct data type
         if most_common_vals:
+            most_common_vals = self.convert_string_to_list(most_common_vals, data_type)
+            """
             if data_type == 'numeric':
                 most_common_vals = [float(x) for x in most_common_vals.strip('{}').split(',')]
             elif data_type == 'char':
                 most_common_vals = [x for x in most_common_vals.strip('{}').split(',')]    
             else:
                 raise ValueError("Data type not supported, needs ot be either numeric or char")
+            """
 
         # first check if the value is in the most common values
         if most_common_vals and value in most_common_vals:
@@ -290,13 +320,15 @@ class SimpleCost:
         selectivity = 1.0 / n_distinct    
 
         if histogram_bounds is not None:
+            histogram_bounds = self.convert_string_to_list(histogram_bounds, data_type)
+            """
             if data_type == 'numeric':
                 histogram_bounds = [float(x) for x in histogram_bounds.strip('{}').split(',')] # convert to list of integers
             elif data_type == 'char':
                 histogram_bounds = [x for x in histogram_bounds.strip('{}').split(',')]
             else:
                 raise ValueError("Data type not supported, needs ot be either numeric or char")    
-
+            """
             total_bins = len(histogram_bounds) - 1
 
             # iterate over bins, find bin that contains the value
@@ -588,7 +620,7 @@ class SimpleCost:
         for column in other_columns:
             if column in join_columns:
                 discount_factor *= 0.95
-                break # only apply discount once
+                #break # only apply discount once
 
         # return total cost as the sum of index and table pages
         undiscounted_index_scan_cost = cost_multiplier * (index_pages + table_pages) 
@@ -623,6 +655,8 @@ class SimpleCost:
         cheapest_table_access_path = {}    
         if verbose: print(f"Finding cheapest access paths for tables: {access_paths.keys()}")
         # enumerate over tables that need to be accessed
+        #sequential_scan_cost = {}
+        #max_cost = 0
         for table_name in access_paths:
             if verbose: print(f"\nTable: {table_name}")
             # enumerate over access paths for this table
@@ -633,6 +667,7 @@ class SimpleCost:
                 # (for now, assume cost is proportional to the cardinality of the data that needs to be accessed)
                 if path['scan_type'] == 'Sequential Scan':
                     cost = self.estimate_sequentail_scan_cost(stats[table_name], estimated_rows[table_name], cost_multiplier=sequential_scan_cost_multiplier, verbose=verbose)
+                    #sequential_scan_cost[table_name] = cost
                 elif path['scan_type'] == 'Index Scan':
                     index_id = path['index_id']
                     index = indexes[index_id]
@@ -648,10 +683,26 @@ class SimpleCost:
                 if cost < cheapest_cost:
                     cheapest_cost = cost
                     cheapest_access_path = path
+                #if cost > max_cost:
+                #    max_cost = cost    
 
             cheapest_table_access_path[table_name] = (cheapest_access_path, cheapest_cost)
             if verbose: print(f"\tCheapest access path: {cheapest_access_path}, Cost: {cheapest_cost}")
-        
+
+        """            
+        if normalize_cost:
+            
+            # normalize the cheapest scan cost for each table by the sequential scan cost
+            # (this is to make the cost values more interpretable and comparable across tables)
+            for table_name in cheapest_table_access_path:
+                if sequential_scan_cost[table_name] > 0:
+                    cheapest_table_access_path[table_name] = (cheapest_table_access_path[table_name][0], cheapest_table_access_path[table_name][1] / sequential_scan_cost[table_name])
+                else:
+                    cheapest_table_access_path[table_name] = (cheapest_table_access_path[table_name][0], float('inf'))
+            
+        """
+
+
         return cheapest_table_access_path
 
 
