@@ -2,10 +2,8 @@
     TPC-H query predicates parser
 """
 
-import json
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
-
 import re
 
 
