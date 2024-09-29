@@ -6,84 +6,6 @@ import random
 import math
 
 
-# returns SSB schema as a dictionary
-def get_ssb_schema():
-    tables = {
-        "lineorder": [
-            ("lo_orderkey", "INT"),
-            ("lo_linenumber", "INT"),
-            ("lo_custkey", "INT"),
-            ("lo_partkey", "INT"),
-            ("lo_suppkey", "INT"),
-            ("lo_orderdate", "DATE"),
-            ("lo_orderpriority", "CHAR(15)"),
-            ("lo_shippriority", "CHAR(1)"),
-            ("lo_quantity", "INT"),
-            ("lo_extendedprice", "DECIMAL(18,2)"),
-            ("lo_ordtotalprice", "DECIMAL(18,2)"),
-            ("lo_discount", "DECIMAL(18,2)"),
-            ("lo_revenue", "DECIMAL(18,2)"),
-            ("lo_supplycost", "DECIMAL(18,2)"),
-            ("lo_tax", "INT"),
-            ("lo_commitdate", "DATE"),
-            ("lo_shipmode", "CHAR(10)")
-        ],
-        "part": [
-            ("p_partkey", "INT"),
-            ("p_name", "VARCHAR(22)"),
-            ("p_mfgr", "CHAR(6)"),
-            ("p_category", "CHAR(7)"),
-            ("p_brand", "CHAR(9)"),
-            ("p_color", "VARCHAR(11)"),
-            ("p_type", "VARCHAR(25)"),
-            ("p_size", "INT"),
-            ("p_container", "CHAR(15)")
-        ],
-        "supplier": [
-            ("s_suppkey", "INT"),
-            ("s_name", "CHAR(25)"),
-            ("s_address", "VARCHAR(25)"),
-            ("s_city", "CHAR(10)"),
-            ("s_nation", "CHAR(15)"),
-            ("s_region", "CHAR(12)"),
-            ("s_phone", "CHAR(20)")
-        ],
-        "customer": [
-            ("c_custkey", "INT"),
-            ("c_name", "VARCHAR(25)"),
-            ("c_address", "VARCHAR(25)"),
-            ("c_city", "CHAR(10)"),
-            ("c_nation", "CHAR(15)"),
-            ("c_region", "CHAR(12)"),
-            ("c_phone", "CHAR(15)"),
-            ("c_mktsegment", "CHAR(12)")
-        ],
-        "dwdate": [
-            ("d_datekey", "DATE"),
-            ("d_date", "CHAR(18)"),
-            ("d_dayofweek", "CHAR(9)"),
-            ("d_month", "CHAR(9)"),
-            ("d_year", "INT"),
-            ("d_yearmonthnum", "INT"),
-            ("d_yearmonth", "CHAR(7)"),
-            ("d_daynuminweek", "INT"),
-            ("d_daynuminmonth", "INT"),
-            ("d_daynuminyear", "INT"),
-            ("d_monthnuminyear", "INT"),
-            ("d_weeknuminyear", "INT"),
-            ("d_sellingseason", "CHAR(12)"),
-            ("d_lastdayinweekfl", "BIT"),
-            ("d_lastdayinmonthfl", "BIT"),
-            ("d_holidayfl", "BIT"),
-            ("d_weekdayfl", "BIT")
-        ]
-    }
-
-    pk_columns = {"lineorder": ["lo_orderkey", "lo_linenumber"], "part": ["p_partkey"], "supplier": ["s_suppkey"], "customer": ["c_custkey"], "dwdate": ["d_datekey"]}
-
-    return tables, pk_columns
-
-
 # class for SSB queries
 class Query:
     def __init__(self, template_id, query_string, payload, predicates, order_by, group_by):
@@ -107,7 +29,7 @@ class QGEN:
             random.seed(seed)
 
         # assume table self.stats and schema available
-        with open('ssb_stats.pkl', 'rb') as f:
+        with open('ssb10_stats.pkl', 'rb') as f:
             self.stats = pickle.load(f)
 
         self.query_templates = {    
@@ -377,7 +299,7 @@ class QGEN:
                                         {'column': 'lo_discount', 'operator': 'range', 'value': ('discount_low', 'discount_high'), 'join': False},
                                         {'column': 'lo_quantity', 'operator': 'inequality', 'value': 'quantity', 'join': False}],
                                     'dwdate': [
-                                        {'column': 'd_year', 'operator': 'eq', 'value': 'year'}]}, 
+                                        {'column': 'd_year', 'operator': 'eq', 'value': 'year', 'join': False}]}, 
                                 
                                 2: {'lineorder': [
                                         {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True},
@@ -461,7 +383,7 @@ class QGEN:
                                     ]},
 
                                 9: {'customer': [
-                                        {'column': 'c_city', 'operator': 'in', 'value': ['city_1', 'city_2'], 'join': False}
+                                        {'column': 'c_city', 'operator': 'or', 'value': ['city_1', 'city_2'], 'join': False}
                                     ],
                                     'lineorder': [
                                         {'column': 'lo_custkey', 'operator': 'eq', 'value': 'c_custkey', 'join': True},
@@ -469,14 +391,14 @@ class QGEN:
                                         {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True}
                                     ],
                                     'supplier': [
-                                        {'column': 's_city', 'operator': 'in', 'value': ['city_1', 'city_2'], 'join': False}
+                                        {'column': 's_city', 'operator': 'or', 'value': ['city_1', 'city_2'], 'join': False}
                                     ],
                                     'dwdate': [
                                         {'column': 'd_year', 'operator': 'range', 'value': ('year_low', 'year_high'), 'join': False}
                                     ]},  
 
                                 10: {'customer': [
-                                        {'column': 'c_city', 'operator': 'in', 'value': ['city_1', 'city_2'], 'join': False}
+                                        {'column': 'c_city', 'operator': 'or', 'value': ['city_1', 'city_2'], 'join': False}
                                     ],
                                     'lineorder': [
                                         {'column': 'lo_custkey', 'operator': 'eq', 'value': 'c_custkey', 'join': True},
@@ -484,7 +406,7 @@ class QGEN:
                                         {'column': 'lo_orderdate', 'operator': 'eq', 'value': 'd_datekey', 'join': True}
                                     ],
                                     'supplier': [
-                                        {'column': 's_city', 'operator': 'in', 'value': ['city_1', 'city_2'], 'join': False}
+                                        {'column': 's_city', 'operator': 'or', 'value': ['city_1', 'city_2'], 'join': False}
                                     ],
                                     'dwdate': [
                                         {'column': 'd_yearmonth', 'operator': 'eq', 'value': 'yearmonth', 'join': False}
@@ -497,7 +419,7 @@ class QGEN:
                                         {'column': 's_region', 'operator': 'eq', 'value': 'region', 'join': False}
                                     ],
                                     'part': [
-                                        {'column': 'p_mfgr', 'operator': 'in', 'value': ['mfgr_1', 'mfgr_2'], 'join': False}
+                                        {'column': 'p_mfgr', 'operator': 'or', 'value': ['mfgr_1', 'mfgr_2'], 'join': False}
                                     ],
                                     'lineorder': [
                                         {'column': 'lo_custkey', 'operator': 'eq', 'value': 'c_custkey', 'join': True},
@@ -507,7 +429,7 @@ class QGEN:
                                     ]}, 
 
                                 12: {'dwdate': [
-                                        {'column': 'd_year', 'operator': 'in', 'value': ['year_1', 'year_2'], 'join': False}
+                                        {'column': 'd_year', 'operator': 'or', 'value': ['year_1', 'year_2'], 'join': False}
                                     ],
                                     'customer': [
                                         {'column': 'c_region', 'operator': 'eq', 'value': 'region', 'join': False}
@@ -516,7 +438,7 @@ class QGEN:
                                         {'column': 's_region', 'operator': 'eq', 'value': 'region', 'join': False}
                                     ],
                                     'part': [
-                                        {'column': 'p_mfgr', 'operator': 'in', 'value': ['mfgr_1', 'mfgr_2'], 'join': False}
+                                        {'column': 'p_mfgr', 'operator': 'or', 'value': ['mfgr_1', 'mfgr_2'], 'join': False}
                                     ],
                                     'lineorder': [
                                         {'column': 'lo_custkey', 'operator': 'eq', 'value': 'c_custkey', 'join': True},
@@ -526,7 +448,7 @@ class QGEN:
                                     ]}, 
 
                                 13: {'dwdate': [
-                                        {'column': 'd_year', 'operator': 'in', 'value': ['year_1', 'year_2'], 'join': False}
+                                        {'column': 'd_year', 'operator': 'or', 'value': ['year_1', 'year_2'], 'join': False}
                                     ],
                                     'customer': [
                                         {'column': 'c_region', 'operator': 'eq', 'value': 'region', 'join': False}
@@ -584,6 +506,7 @@ class QGEN:
             predicate_dict['lineorder'][1]['value'] = (discount_low, discount_high)
             predicate_dict['lineorder'][2]['value'] = quantity
             predicate_dict['dwdate'][0]['value'] = year
+            predicate_dict['lineorder'][2]['operator'] = inequality_op
 
         elif template_num == 2:
             yearmonthnum_stats = self.stats['dwdate']['d_yearmonthnum']
