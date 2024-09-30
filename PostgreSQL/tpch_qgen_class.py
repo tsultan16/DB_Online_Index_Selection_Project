@@ -132,21 +132,25 @@ class TPCH_QGEN:
         self.query_templates = {
             1: """
                 SELECT
-                    c_custkey,
-                    o_orderdate,
-                    SUM(l_extendedprice * (1 - l_discount)) AS total_spent
+                    c.c_custkey,
+                    o.o_orderdate,
+                    SUM(l.l_extendedprice * (1 - l.l_discount)) AS total_spent
                 FROM
-                    customer
+                    customer c
                 JOIN
-                    orders ON c_custkey = o_custkey
+                    orders o ON c.c_custkey = o.o_custkey
                 JOIN
-                    lineitem ON o_orderkey = l_orderkey
+                    lineitem l ON o.o_orderkey = l.l_orderkey
+                JOIN
+                    nation n ON c.c_nationkey = n.n_nationkey
+                JOIN
+                    region r ON n.n_regionkey = r.r_regionkey
                 WHERE
-                    c_region = '{region}'
-                    AND l_shipdate BETWEEN DATE '{start_date}' AND DATE '{end_date}'
+                    r.r_name = '{region}'
+                    AND l.l_shipdate BETWEEN DATE '{start_date}' AND DATE '{end_date}'
                 GROUP BY
-                    c_custkey,
-                    o_orderdate
+                    c.c_custkey,
+                    o.o_orderdate
                 ORDER BY
                     total_spent DESC;
             """,
@@ -430,8 +434,8 @@ class TPCH_QGEN:
 
         self.predicates = {
             1: {
-                'customer': ["c_region"],
-                'lineitem': ["l_shipdate"]
+                'lineitem': ["l_shipdate"],
+                'region': ["r_name"]
             },
             2: {
                 'supplier': ["s_acctbal"],
@@ -668,14 +672,20 @@ class TPCH_QGEN:
 
         self.predicate_dicts = {
             1: {
-                "customer": [
-                    {"column": "c_region", "operator": "eq", "value": "'{region}'", "join": False},
-                    {"column": "c_custkey", "operator": "eq", "value": "o_custkey", "join": True},
+                "region": [
+                    {"column": "r_name", "operator": "eq", "value": "'{region}'", "join": False}, 
+                    {"column": "r_regionkey", "operator": "eq", "value": "n_regionkey", "join": True}
+
                 ],
                 "lineitem": [
-                    {"column": "l_shipdate", "operator": "range", "value": "'{start_date}' AND DATE '{end_date}'", "join": False},
-                    {"column": "l_orderkey", "operator": "eq", "value": "o_orderkey", "join": True}
+                    {"column": "l_shipdate", "operator": "range", "value": ("DATE '{start_date}'", "DATE '{end_date}'"), "join": False},
+                    {"column": "l_orderkey", "operator": "eq", "value": "o_orderkey", "join": True},
+
                 ],
+                "customer": [
+                    {"column": "c_nationkey", "operator": "eq", "value": "n_nationkey", "join": True},
+                    {"column": "c_custkey", "operator": "eq", "value": "o_custkey", "join": True},
+                ]
             },
             2: {
                 "supplier": [
@@ -822,11 +832,22 @@ class TPCH_QGEN:
 
         # Fill parameters based on statistics
         if template_num == 1:
+            # Choose a random region name from the region statistics
             region = random.choice(list(self.stats['region']['r_name']['histogram'].keys()))
-            start_date = self.stats['lineitem']['l_shipdate']['min'] + timedelta(days=random.randint(0, (self.stats['lineitem']['l_shipdate']['max'] - self.stats['lineitem']['l_shipdate']['min']).days))
+            
+            # Determine a random start date within the available shipdate range
+            min_shipdate = self.stats['lineitem']['l_shipdate']['min']
+            max_shipdate = self.stats['lineitem']['l_shipdate']['max']
+            start_date = min_shipdate + timedelta(days=random.randint(0, (max_shipdate - min_shipdate).days))
+            
+            # Define an end date up to 30 days after the start date
             end_date = start_date + timedelta(days=random.randint(1, 30))
+            
+            # Format the query with the selected parameters
             query = template.format(region=region, start_date=start_date.strftime('%Y-%m-%d'), end_date=end_date.strftime('%Y-%m-%d'))
-            self.predicate_dicts[template_num]['customer'][0]['value'] = region
+            
+            # Update predicate dicts to reflect the selected parameters
+            self.predicate_dicts[template_num]['region'][0]['value'] = f"'{region}'"
             self.predicate_dicts[template_num]['lineitem'][0]['value'] = (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
 
         elif template_num == 2:
