@@ -32,7 +32,7 @@ import math
 #from functools import lru_cache
 
 
-DBNAME = 'tpch4'
+DBNAME = 'tpch10'
 
 
 """
@@ -53,33 +53,28 @@ class Node:
 # class for creating and storing the IBG
 class IBG:
     # Class-level cache
-    _stats_cache = None
-    _estimated_rows_cache = None
+    _tpch_pk_indexes = None
 
-    def __init__(self, query_object, C, existing_indexes=[], execution_cost_scaling=1e-6, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, simple_cost=False):
+    def __init__(self, query_object, C, existing_indexes=[], execution_cost_scaling=1e-6, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, simple_cost_model=None):
         self.q = query_object
         self.C = C
         self.existing_indexes = existing_indexes # indexes currently materialized in the database
         self.execution_cost_scaling = execution_cost_scaling
+        self.ibg_max_nodes = ibg_max_nodes
+        self.doi_max_nodes = doi_max_nodes
+        self.max_doi_iters_per_node = max_doi_iters_per_node
         self.normalize_doi = normalize_doi
-        self.simple_cost = simple_cost
         print(f"Number of candidate indexes: {len(self.C)}")
         #print(f"Candidate indexes: {self.C}")
         
-        if self.simple_cost:
-            if IBG._stats_cache is None:
-                tables, pk_columns = get_tpch_schema()
-                table_names = list(tables.keys())
-                stats = {}
-                estimated_rows = {}
-                for table_name in table_names:
-                    stats[table_name], estimated_rows[table_name] = get_table_stats(table_name, dbname=DBNAME)
-
-                IBG._stats_cache = stats
-                IBG._estimated_rows_cache = estimated_rows
-
-            self.simple_cost_model = SimpleCost(IBG._stats_cache, IBG._estimated_rows_cache, index_scan_cost_multiplier=1.0, dbname=DBNAME) # 1.5)
+        if IBG._tpch_pk_indexes is None:
             self.pk_indexes = tpch_pk_index_objects()
+
+        if simple_cost_model is not None:
+            self.simple_cost = True
+            self.simple_cost_model = simple_cost_model
+        else:
+            self.simple_cost = False    
 
         # create a connection session to the database
         self.conn = create_connection(dbname=DBNAME)
@@ -108,11 +103,12 @@ class IBG:
         # start the IBG construction
         start_time = time.time()
         print("Constructing IBG...")
-        self.construct_ibg(self.root, max_nodes=ibg_max_nodes)
+        self.construct_ibg(self.root, max_nodes=ibg_max_nodes)  # truncate IBG at ibg_max_nodes
         end_time = time.time()
         ibg_construction_time = end_time - start_time
         print(f"Number of nodes in IBG: {len(self.nodes)}, Total number of what-if calls: {self.total_whatif_calls}, Time spent on what-if calls: {self.total_whatif_time}, IBG construction time: {ibg_construction_time}")
 
+        """
         # compute all pair degree of interaction
         print(f"Computing all pair degree of interaction...")
         start_time = time.time()
@@ -123,7 +119,34 @@ class IBG:
         #self.doi = self.compute_all_pair_doi_simple()
         #self.doi = self.compute_all_pair_doi_naive(num_samples=32)
         
-        self.doi = self.compute_all_pair_doi_naive_parallel(num_samples=1, num_workers=16, max_iters=max_doi_iters_per_node)
+        #self.doi = self.compute_all_pair_doi_naive_parallel(num_samples=8, num_workers=4, max_iters=max_doi_iters_per_node)
+        self.doi = self.compute_all_pair_doi_naive_parallel(max_iters=doi_max_nodes, num_workers=16)
+        
+        #print(f"All pair doi:")
+        #for key, value in self.doi.items():
+        #    print(f"{key}: {value}")
+        end_time = time.time()
+        print(f"\nTime spent on computing all pair degree of interaction: {end_time - start_time}\n")
+        """
+
+        # unhide existing indexes
+        bulk_unhide_indexes(self.conn, self.existing_indexes)
+        close_connection(self.conn)
+        self.conn = None
+
+
+    def compute_doi(self):
+      # create a connection session to the database
+        self.conn = create_connection(dbname=DBNAME)
+        # hide existing indexes
+        bulk_hide_indexes(self.conn, self.existing_indexes)
+        
+        # compute all pair degree of interaction
+        print(f"Computing all pair degree of interaction...")
+        start_time = time.time()
+    
+        #self.doi = self.compute_all_pair_doi_parallel(num_workers=16, max_nodes=self.doi_max_nodes, max_iters_per_node=self.max_doi_iters_per_node)
+        self.doi = self.compute_all_pair_doi_naive_parallel(max_iters=self.doi_max_nodes, num_workers=16)
         
         #print(f"All pair doi:")
         #for key, value in self.doi.items():
@@ -135,6 +158,7 @@ class IBG:
         bulk_unhide_indexes(self.conn, self.existing_indexes)
         close_connection(self.conn)
         self.conn = None
+
 
     # assign unique string id to a configuration
     def get_configuration_id(self, indexes):
@@ -188,11 +212,9 @@ class IBG:
         return cost, used
 
 
-    def _get_cost_used_2(self, indexes, q=None):
+    def _get_cost_used_2(self, indexes):
         indexes = {index.index_id:index for index in indexes + self.pk_indexes}
-        if q is None:
-            q = self.q
-        cost, used = self.simple_cost_model.predict(q, indexes, verbose=False)
+        cost, used = self.simple_cost_model.predict(indexes, verbose=False)
         #print(f"Number of configuration indexes:{len(indexes)}, Cost: {cost}, Used indexes: {used}")
         cost *= self.execution_cost_scaling
         used = [self.idx2index[index_id] for index_id in used]
@@ -314,12 +336,19 @@ class IBG:
             #raise ValueError("Index 'a' is already in X")
             return 0          
 
+        #if self.simple_cost:
+        #    cost_X = self._get_cost_used_2(X)[0]
+        #    cost_X_a = self._get_cost_used_2(X + [a])[0]
+
+        #else:    
+        
         # get cost  for X
         cost_X = self.get_cost_used(X)[0]
         # create a new configuration with index a added to X
         X_a = X + [a]
         # get cost for X + {a}
         cost_X_a = self.get_cost_used(X_a)[0]
+
         # compute benefit
         benefit = cost_X - cost_X_a
 
@@ -410,6 +439,7 @@ class IBG:
 
 
     # Naive version of compute_all_pair_doi, with random sampling of configurations, parallelized
+    """    
     def compute_all_pair_doi_naive_parallel(self, num_samples=100, num_workers=8, max_iters=None):
         doi = {}
         
@@ -449,6 +479,53 @@ class IBG:
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = {executor.submit(compute_doi_for_sample, i): i for i in range(num_samples)}
             for future in tqdm(as_completed(futures), total=num_samples, desc="Sampling configurations"):
+                local_doi = future.result()
+                for key, value in local_doi.items():
+                    doi[key] = max(doi[key], value)
+
+        return doi
+    """
+
+    def compute_all_pair_doi_naive_parallel(self, max_iters, num_workers=8):
+        doi = {}
+        
+        # Initialize DOI dictionary with zero values
+        for i in range(len(self.C)):
+            for j in range(i + 1, len(self.C)):
+                doi[tuple(sorted((self.C[i].index_id, self.C[j].index_id)))] = 0
+
+        # get all the IBG node configurations
+        IBG_configs = [node.indexes for node in self.nodes.values()]
+
+        # sample max_nodes number of nodes from the chunk
+        unique_X_configs = random.sample(IBG_configs, min(max_iters, len(IBG_configs))) 
+        # add empty set configuration
+        unique_X_configs.append([])
+
+        # Distribute configurations evenly among num_workers
+        chunks = [unique_X_configs[i::num_workers] for i in range(num_workers)]
+
+        def compute_doi_for_chunk(chunk):
+            local_doi = {}
+            for X in chunk:
+                C_sample = self.C  # Assuming you want to work over the entire set C for each X
+                for i in range(len(C_sample)):
+                    for j in range(i + 1, len(C_sample)):
+                        a = C_sample[i]
+                        b = C_sample[j]
+                        if a not in X and b not in X:
+                            d = self.compute_doi_configuration(a, b, X)
+                            key = tuple(sorted((a.index_id, b.index_id)))
+                            if key not in local_doi:
+                                local_doi[key] = d
+                            else:
+                                local_doi[key] = max(local_doi[key], d)
+            return local_doi
+
+        # Use ThreadPoolExecutor for parallel execution with specified number of workers
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(compute_doi_for_chunk, chunk): chunk for chunk in chunks}
+            for future in tqdm(as_completed(futures), total=len(chunks), desc="Processing chunks"):
                 local_doi = future.result()
                 for key, value in local_doi.items():
                     doi[key] = max(doi[key], value)
@@ -650,6 +727,8 @@ def process_node_chunk(args):
 
 class WFIT:
     database_size_cache = None
+    _stats_cache = None
+    _estimated_rows_cache = None
 
     def __init__(self, max_key_columns=None, include_cols=False, max_include_columns=3, simple_cost=False, enable_stable_partition_locking=True, max_indexes_per_table=3, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, idxCnt=25, stateCnt=500, histSize=1000, rand_cnt=100, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1):
         # bulk drop all materialized secondary indexes
@@ -686,6 +765,11 @@ class WFIT:
         self.enable_stable_partition_locking = enable_stable_partition_locking
         # maximum number of indexes to monitor
         self.max_U = max_U
+
+        # hard-coded 8 for tpch
+        if max_U < max_indexes_per_table * 8:
+            raise ValueError("max_U must be at least 8 times the maximum number of indexes per table") 
+
         # maximum number of nodes in IBG
         self.ibg_max_nodes = ibg_max_nodes
         # maximum number of nodes in DOI computation
@@ -1049,9 +1133,9 @@ class WFIT:
                     # incremental average benefit of index up to query n (higher weight/smaller denominator for more recent queries)
                     benefit = b_total / (self.n_pos - n + 1)
                     current_benefit = max(current_benefit, benefit)
-                avg_benefit[index_id] = current_benefit
+                avg_benefit[index_id] = current_benefit        
 
-
+        """
         # sort indexes by average benefit
         sorted_indexes = sorted(avg_benefit, key=avg_benefit.get, reverse=True)
 
@@ -1068,6 +1152,55 @@ class WFIT:
                     num_removed += 1
                 if excess == 0:
                     break
+        """
+
+        # partition the indexes according to table
+        table_indexes = defaultdict(list)
+        for index_id in self.U:
+            table_indexes[self.U[index_id].table_name].append((index_id, avg_benefit[index_id]))
+
+        # sort indexes in each table by average benefit
+        for table_id in table_indexes:
+            table_indexes[table_id] = sorted(table_indexes[table_id], key=lambda x: x[1], reverse=True)   
+
+        # print indexes in each table
+        #if verbose:
+        #    print(f"Indexes in each table:")
+        #    for table_id in table_indexes:
+        #        print(f"\tTable {table_id}: {[index[0] for index in table_indexes[table_id]]}")    
+
+        # collect index_id of all indexes to keep
+        indexes_to_keep = self.S_0 + list(self.M.keys()) + list(self.C.keys())
+        indexes_to_keep = set(indexes_to_keep)
+
+        if verbose:
+            print(f'\nNum indexes in U: {len(self.U)}')
+            print(f"Number of excess indexes: {excess}\n")
+        #    print(f'Num indexes to keep: {len(indexes_to_keep)}')
+
+        # keep iterating over tables, remove least beneficial indexes until we have self.max_U indexes and 
+        # there are at least self.max_indexes_per_table indexes per table if possible
+        num_removed = 0
+        while excess > 0:
+            indexes_removed = []
+            for table_id in table_indexes:
+                #print(f"Table: {table_id}, num indexes: {len(table_indexes[table_id])}")
+                if len(table_indexes[table_id]) > self.MAX_INDEXES_PER_TABLE:
+                    # iterate backwards from the end of ther table and removethe first index that is not in indexes_to_keep
+                    for i in range(len(table_indexes[table_id])-1, self.MAX_INDEXES_PER_TABLE-1, -1):
+                        index_id = table_indexes[table_id][i][0]
+                        if index_id not in indexes_to_keep:
+                            # remove the index from table_indexes
+                            table_indexes[table_id].pop(i)
+                            del self.U[index_id]
+                            indexes_removed.append(index_id)
+                            excess -= 1
+                            num_removed += 1
+                            break    
+
+            #print(f"Indexes removed: {indexes_removed}, current excess: {excess}") 
+            if excess == 0 or len(indexes_removed) == 0:
+                break                        
 
         if verbose:
             #print(f"Average benefit of indexes:")
@@ -1227,7 +1360,8 @@ class WFIT:
                 sorted_X = tuple(sorted(X, key=lambda x: x.index_id))
                 wf_term = wf[sorted_X]
                 if self.simple_cost: 
-                    query_cost_term = ibg._get_cost_used_2(list(sorted_X), q=query_object)[0] # use simple cost model estimate
+                    query_cost_term = self.simple_cost_model.predict(list(sorted_X), verbose=False)[0] * self.execution_cost_scaling
+    
                 else:
                     query_cost_term = ibg.get_cost_used(list(sorted_X))[0] 
                 transition_cost_term = self.compute_transition_cost(sorted_X, sorted_Y) 
@@ -1304,8 +1438,8 @@ class WFIT:
 
     
     # compute index benefit graph for the given query and candidate indexes
-    def compute_IBG(self, query_object, candidate_indexes):
-        return IBG(query_object, candidate_indexes, existing_indexes=list(self.M.values()), execution_cost_scaling=self.execution_cost_scaling, ibg_max_nodes=self.ibg_max_nodes, doi_max_nodes=self.doi_max_nodes, max_doi_iters_per_node=self.max_doi_iters_per_node, normalize_doi=self.normalize_doi, simple_cost=self.simple_cost)
+    def create_IBG(self, query_object, candidate_indexes, simple_cost_model=None):
+        return IBG(query_object, candidate_indexes, existing_indexes=list(self.M.values()), execution_cost_scaling=self.execution_cost_scaling, ibg_max_nodes=self.ibg_max_nodes, doi_max_nodes=self.doi_max_nodes, max_doi_iters_per_node=self.max_doi_iters_per_node, normalize_doi=self.normalize_doi, simple_cost_model=simple_cost_model)
     
 
     # extract candidate indexes from given query
@@ -1327,6 +1461,24 @@ class WFIT:
 
     # generate stable partitions/sets of indexes for next query in workload
     def choose_candidates(self, n_pos, query_object, remove_stale_U, remove_stale_freq, verbose):
+        
+        # create a new simple cost model for the query
+        if self.simple_cost:
+            if WFIT._stats_cache is None:
+                tables, pk_columns = get_tpch_schema()
+                table_names = list(tables.keys())
+                stats = {}
+                estimated_rows = {}
+                for table_name in table_names:
+                    stats[table_name], estimated_rows[table_name] = get_table_stats(table_name, dbname=DBNAME)
+
+                WFIT._stats_cache = stats
+                WFIT._estimated_rows_cache = estimated_rows
+
+            self.simple_cost_model = SimpleCost(query_object, WFIT._stats_cache, WFIT._estimated_rows_cache, index_scan_cost_multiplier=1.0, dbname=DBNAME) # 1.5)
+        else:
+            self.simple_cost_model = None
+
         # check if query template seen before
         if query_object.template_id in self.query_templates_seen:
             if self.enable_stable_partition_locking:
@@ -1355,11 +1507,6 @@ class WFIT:
 
         if verbose: print(f"Extracted {num_new} new indexes from query.")
 
-        # remove stale indexes from U
-        if remove_stale_U and (self.n_pos % remove_stale_freq == 0):
-            if verbose: print(f"Removing stale indexes from U...")
-            self.remove_stale_indexes_U(verbose)
-
         #if len(self.U) > self.max_U:
         #    raise ValueError("Number of candidate indexes exceeds the maximum limit. Aborting WFIT...")
 
@@ -1367,19 +1514,18 @@ class WFIT:
             print(f"Candidate indexes (including those currently materialized), |U| = {len(self.U)}")
             #print(f"{[index.index_id for index in self.U.values()]}")
 
-        # TODO: need mechanism to evict indexes from U that may have gone "stale" to prevent unbounded growth of U
+        # TODO: need mechanism to evict indexes from U that may have gone "stale" to prevent unbounded growth of U 
 
-        
         # compute index benefit graph for the query
         if verbose: print(f"Computing IBG...")
-        ibg = self.compute_IBG(query_object, list(self.U.values()))
+        ibg = self.create_IBG(query_object, list(self.U.values()), self.simple_cost_model)
         self.ibg_prev = ibg
 
         #if verbose: print(f"Candidate index sizes in Mb: {[(index.index_id,index.size) for index in self.U.values()]}")
         
         # update statistics for the candidate indexes (n_pos is the position of the query in the workload sequence)
         if verbose: print(f"Updating statistics...")
-        self.update_stats(n_pos, ibg, verbose=False)
+        self.update_stats(query_object, n_pos, ibg, remove_stale_U, remove_stale_freq, verbose=False)
 
         # non-materialized candidate indexes 
         X = [self.U[index_id] for index_id in self.U if index_id not in self.M]
@@ -1558,7 +1704,7 @@ class WFIT:
 
 
     # update candidate index statistics
-    def update_stats(self, n, ibg, verbose):
+    def update_stats(self, query_object, n, ibg, remove_stale_U, remove_stale_freq, verbose):
         # update index benefit statistics
         if verbose: print("Updating index benefit statistics...")
         for index in self.U.values():
@@ -1574,6 +1720,19 @@ class WFIT:
             for index_id, stats in self.idxStats.items():
                 print(f"\tIndex {index_id}: {stats}")
 
+        # remove stale indexes from U
+        if remove_stale_U and (self.n_pos % remove_stale_freq == 0):
+            #if verbose: print(f"Removing stale indexes from U...")
+            print(f"Removing stale indexes from U...")
+            self.remove_stale_indexes_U(verbose=True)
+
+            # recreate IBG with updated candidate indexes
+            print(f"Re-computing IBG...")
+            ibg = self.create_IBG(query_object, list(self.U.values()), self.simple_cost_model)
+            self.ibg_prev = ibg 
+
+        # compute all pair doi in IBG
+        ibg.compute_doi()
 
         # update index interaction statistics
         if verbose: print("Updating index interaction statistics...")
@@ -1712,7 +1871,7 @@ class WFIT:
         top_indexes = {index.index_id: index for indexes in top_indexes_keep.values() for index in indexes}        
 
         if verbose:
-            print(f"{len(top_indexes)} Top index scores:")
+            print(f"\n{len(top_indexes)} Top index scores:")
             for index_id in top_indexes:
                 print(f"\tIndex {index_id}: {score[index_id]}")
         
