@@ -23,7 +23,7 @@ from collections import defaultdict, deque
 import time
 import random
 from more_itertools import powerset
-from itertools import chain
+from itertools import chain, permutations
 from tqdm import tqdm
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
@@ -439,53 +439,6 @@ class IBG:
 
 
     # Naive version of compute_all_pair_doi, with random sampling of configurations, parallelized
-    """    
-    def compute_all_pair_doi_naive_parallel(self, num_samples=100, num_workers=8, max_iters=None):
-        doi = {}
-        
-        # Initialize DOI dictionary with zero values
-        for i in range(len(self.C)):
-            for j in range(i + 1, len(self.C)):
-                doi[tuple(sorted((self.C[i].index_id, self.C[j].index_id)))] = 0
-
-        def compute_doi_for_sample(sample_index):
-            if sample_index == 0:
-                X = []
-            else:
-                X = random.sample(self.C, random.randint(1, len(self.C)))
-
-            local_doi = {}
-
-            if max_iters is not None:
-                C_sample = random.sample(self.C, min(len(self.C), max_iters)) 
-            else: 
-                C_sample = self.C
-   
-            for i in range(len(C_sample)):
-                for j in range(i + 1, len(C_sample)):
-                    a = C_sample[i]
-                    b = C_sample[j]
-                    if a not in X and b not in X:
-                        d = self.compute_doi_configuration(a, b, X)
-                        key = tuple(sorted((a.index_id, b.index_id)))
-                        if key not in local_doi:
-                            local_doi[key] = d
-                        else:
-                            local_doi[key] = max(local_doi[key], d)
-        
-            return local_doi
-
-        # Use ThreadPoolExecutor for parallel execution with a specified number of workers
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = {executor.submit(compute_doi_for_sample, i): i for i in range(num_samples)}
-            for future in tqdm(as_completed(futures), total=num_samples, desc="Sampling configurations"):
-                local_doi = future.result()
-                for key, value in local_doi.items():
-                    doi[key] = max(doi[key], value)
-
-        return doi
-    """
-
     def compute_all_pair_doi_naive_parallel(self, max_iters, num_workers=8):
         doi = {}
         
@@ -914,7 +867,7 @@ class WFIT:
 
             if verbose:
                 print(f"Recommendation Indexes added:   {[index.index_id for index in all_indexes_added]}")
-                print(f"Recommendation Indexes removed: {[index.index_id for index in all_indexes_removed]}")
+                print(f"\nRecommendation Indexes removed: {[index.index_id for index in all_indexes_removed]}")
 
         end_time = time.time()
         recommendation_time = end_time - start_time
@@ -940,8 +893,8 @@ class WFIT:
         if verbose: 
             print(f"\nConfiguration materialization time: {config_materialization_time} s\n")
             print(f"{len(self.M)} currently materialized indexes: {[index.index_id for index in self.M.values()]}\n")
-            print(f"\nIndexes added: {[index.index_id for index in all_indexes_added]}")
-            print(f"Indexes removed: {[index.index_id for index in all_indexes_removed]}")
+            print(f"\nIndexes added this round: {[index.index_id for index in all_indexes_added]}")
+            print(f"Indexes removed this round: {[index.index_id for index in all_indexes_removed]}")
             print(f"\nTotal Configuration Size: {sum([index.size for index in self.M.values()])} MB\n")
 
         # restart the server before batch query execution
@@ -1135,25 +1088,6 @@ class WFIT:
                     current_benefit = max(current_benefit, benefit)
                 avg_benefit[index_id] = current_benefit        
 
-        """
-        # sort indexes by average benefit
-        sorted_indexes = sorted(avg_benefit, key=avg_benefit.get, reverse=True)
-
-        # keep at most self.max_U of highest benefit indexes in U, make sure to keep all indexes in S_0, M, stable partitions and indexes for which we have no stats
-        # (on certain rounds we may have a lot of indexes with no stats, so those rounds will be slower)
-        print(f"Number of indexes in U: {len(self.U)}")
-        num_removed = 0
-        if excess > 0:
-            # remove indexes in reverse order of benefit until we have self.max_U indexes
-            for index_id in sorted_indexes[::-1]:
-                if index_id not in self.M and index_id not in self.S_0 and index_id not in self.C and len(self.idxStats[index_id])!=0:
-                    del self.U[index_id]
-                    excess -= 1
-                    num_removed += 1
-                if excess == 0:
-                    break
-        """
-
         # partition the indexes according to table
         table_indexes = defaultdict(list)
         for index_id in self.U:
@@ -1169,6 +1103,13 @@ class WFIT:
         #    for table_id in table_indexes:
         #        print(f"\tTable {table_id}: {[index[0] for index in table_indexes[table_id]]}")    
 
+        print(f"\nSorted indexes by table:")
+        for table_id in table_indexes:
+            print(f"Table {table_id}: ")
+            for index_id, benefit in table_indexes[table_id]:
+                print(f"\t{index_id}: {benefit}")
+
+
         # collect index_id of all indexes to keep
         indexes_to_keep = self.S_0 + list(self.M.keys()) + list(self.C.keys())
         indexes_to_keep = set(indexes_to_keep)
@@ -1181,6 +1122,7 @@ class WFIT:
         # keep iterating over tables, remove least beneficial indexes until we have self.max_U indexes and 
         # there are at least self.max_indexes_per_table indexes per table if possible
         num_removed = 0
+        table_indexes_removed = defaultdict(list)
         while excess > 0:
             indexes_removed = []
             for table_id in table_indexes:
@@ -1194,6 +1136,7 @@ class WFIT:
                             table_indexes[table_id].pop(i)
                             del self.U[index_id]
                             indexes_removed.append(index_id)
+                            table_indexes_removed[table_id].append(index_id)
                             excess -= 1
                             num_removed += 1
                             break    
@@ -1207,7 +1150,13 @@ class WFIT:
             #for index_id in sorted_indexes:
             #    print(f"\tIndex {index_id}: {avg_benefit[index_id]}, Stale: {index_id in stale_indexes}")
                 
-            print(f"Number of indexes removed: {num_removed}, Number of indexes remaining: {len(self.U)}")
+            print(f"\nNumber of indexes removed: {num_removed}, Number of indexes remaining: {len(self.U)}")
+            #print(f"\nIndexes removed:\n")
+            #for table_id in table_indexes_removed:
+            #    print(f"  Table {table_id}: ")
+            #    for index_id in table_indexes_removed[table_id]:
+            #        print(f"      {index_id} : {avg_benefit[index_id]}")
+
             #print(f"Indexes in U: {self.U.keys()}")
                 
 
@@ -1752,7 +1701,7 @@ class WFIT:
 
 
     # choose top num_indexes indexes from X with highest potential benefit
-    def top_indexes(self, N_workload, X, num_indexes, verbose, matching_prefix_length=1):
+    def top_indexes(self, N_workload, X, num_indexes, verbose, matching_prefix_length=2, drop_zero_benefit_indexes=True):
         #if verbose:
         #    print(f"Non-materialized candidate indexes, X = {[index.index_id for index in X]}")
 
@@ -1788,6 +1737,10 @@ class WFIT:
         top_indexes = sorted(top_indexes, key=lambda x: score[x], reverse=True)
         top_indexes = {index_id: self.U[index_id] for index_id in top_indexes}
 
+        if drop_zero_benefit_indexes:
+            # drop indexes with zero benefit
+            top_indexes = {index_id: index for index_id, index in top_indexes.items() if score[index_id] > 0}
+
 
         ########################################################################################################################
 
@@ -1799,9 +1752,11 @@ class WFIT:
         for table in top_indexes_table:
             top_indexes_table[table] = sorted(top_indexes_table[table], key=lambda x: score[x.index_id], reverse=True)
         
-        #print(f"Top indexes by table:")
-        #for table in top_indexes_table:
-        #    print(f"\tTable: {table}, Indexes: {[index.index_id for index in top_indexes_table[table]]}")
+        print(f"Top indexes by table:")
+        for table in top_indexes_table:
+            print(f"\tTable: {table}, Indexes: ")
+            for index in top_indexes_table[table]:
+                print(f"\t\tIndex {index.index_id}: {score[index.index_id]}")
 
         # get materialized indexes by table
         materialized_indexes_table = defaultdict(list)
@@ -1844,20 +1799,26 @@ class WFIT:
                 if num_keep <= 0:
                     break
 
+                #print(f"\nConsidering candidate index: {index.index_id}")
+
                 # don't add index if it has a matching prefix with any of the already selected or materialized indexes 
-                if len(index.index_columns) <= matching_prefix_length:
+                if len(index.index_columns) < matching_prefix_length:
                     top_indexes_keep[table].append(index)
+                    #print(f"  Adding index: {index.index_id}")
                     num_keep -= 1
                     continue
 
                 found_matching_prefix = False
-                for chosen_index in (top_indexes_keep[table] + materialized_indexes_table[table]):
-                    if index.index_columns[:matching_prefix_length] == chosen_index.index_columns[:matching_prefix_length]:
+                for already_chosen_index in (top_indexes_keep[table] + materialized_indexes_table[table]):
+                    #print(f"  Checking for matching prefix with index: {already_chosen_index.index_id}")
+                    if index.index_columns[:matching_prefix_length] == already_chosen_index.index_columns[:matching_prefix_length]:
                         found_matching_prefix = True
+                        #print(f"  Found matching prefix with index: {already_chosen_index.index_id}")
                         break
 
                 if not found_matching_prefix:
                     top_indexes_keep[table].append(index)
+                    #print(f"  Adding index: {index.index_id}")
                     num_keep -= 1
                     continue
 
