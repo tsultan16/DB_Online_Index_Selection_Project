@@ -1289,10 +1289,10 @@ class WFIT:
         
         # materialize new configuration
         if verbose: 
-            print(f"\nNew indexes added this round: {[index.index_id for index in all_indexes_added]}")
-            print(f"Old indexes removed this round: {[index.index_id for index in all_indexes_removed]}\n")
-
+            #print(f"\nNew indexes added this round: {[index.index_id for index in all_indexes_added]}")
+            #print(f"Old indexes removed this round: {[index.index_id for index in all_indexes_removed]}\n")
             print(f"Materializing new configuration...")
+        
         start_time = time.time()
         conn = create_connection(dbname=DBNAME)
         bulk_drop_indexes(conn, all_indexes_removed)
@@ -1784,6 +1784,7 @@ class WFIT:
                     break
                 #print(f"\nConsidering candidate index: {index.index_id}")
                 # don't add index if it has a matching prefix with any of the already selected or materialized indexes 
+                # or if all index columns other than leading columns are already covered by another index
                 if len(index.index_columns) < matching_prefix_length:
                     top_indexes_keep[table].append(index)
                     #print(f"  Adding index: {index.index_id}")
@@ -1793,7 +1794,13 @@ class WFIT:
                 found_matching_prefix = False
                 for already_chosen_index in (top_indexes_keep[table] + materialized_indexes_table[table]):
                     #print(f"  Checking for matching prefix with index: {already_chosen_index.index_id}")
-                    if index.index_columns[:matching_prefix_length] == already_chosen_index.index_columns[:matching_prefix_length]:
+                    #(set(index.index_columns[1:]) == set(already_chosen_index.index_columns[1:]))
+
+                    matching_non_leading_columns = False
+                    if len(index.index_columns[1:]) > 0 and len(already_chosen_index.index_columns[1:]) > 0:
+                        matching_non_leading_columns = set(index.index_columns[1:]) == set(already_chosen_index.index_columns[1:])
+
+                    if (index.index_columns[:matching_prefix_length] == already_chosen_index.index_columns[:matching_prefix_length]) or matching_non_leading_columns:
                         found_matching_prefix = True
                         #print(f"  Found matching prefix with index: {already_chosen_index.index_id}")
                         break
