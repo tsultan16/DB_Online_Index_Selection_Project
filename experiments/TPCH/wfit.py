@@ -893,8 +893,8 @@ class WFIT:
         if verbose: 
             print(f"\nConfiguration materialization time: {config_materialization_time} s\n")
             print(f"{len(self.M)} currently materialized indexes: {[index.index_id for index in self.M.values()]}\n")
-            print(f"\nIndexes added this round: {[index.index_id for index in all_indexes_added]}")
-            print(f"Indexes removed this round: {[index.index_id for index in all_indexes_removed]}")
+            print(f"\n{len(all_indexes_added)} indexes added this round: {[index.index_id for index in all_indexes_added]}")
+            print(f"\n{len(all_indexes_removed)} indexes removed this round: {[index.index_id for index in all_indexes_removed]}")
             print(f"\nTotal Configuration Size: {sum([index.size for index in self.M.values()])} MB\n")
 
         # restart the server before batch query execution
@@ -1103,16 +1103,26 @@ class WFIT:
         #    for table_id in table_indexes:
         #        print(f"\tTable {table_id}: {[index[0] for index in table_indexes[table_id]]}")    
 
-        print(f"\nSorted indexes by table:")
-        for table_id in table_indexes:
-            print(f"Table {table_id}: ")
-            for index_id, benefit in table_indexes[table_id]:
-                print(f"\t{index_id}: {benefit}")
+        # print(f"\nSorted indexes by table:")
+        # for table_id in table_indexes:
+        #     print(f"Table {table_id}: ")
+        #     for index_id, benefit in table_indexes[table_id]:
+        #         print(f"\t{index_id}: {benefit}")
 
 
         # collect index_id of all indexes to keep
         indexes_to_keep = self.S_0 + list(self.M.keys()) + list(self.C.keys())
         indexes_to_keep = set(indexes_to_keep)
+
+        # for each table, keep the highest benefit index from the newest extracted indexes
+        best_index_extracted = defaultdict(list)
+        for table_id in table_indexes:
+            if len(best_index_extracted[table_id]) == 0:
+                for index_id, benefit in table_indexes[table_id]:
+                    if len(self.idxStats[index_id]) == 1:
+                        best_index_extracted[table_id].append(index_id)
+                        break
+        indexes_to_keep = indexes_to_keep.union(set(chain(*[best_index_extracted[table_id] for table_id in best_index_extracted])))                            
 
         if verbose:
             print(f'\nNum indexes in U: {len(self.U)}')
@@ -1738,7 +1748,7 @@ class WFIT:
         top_indexes = {index_id: self.U[index_id] for index_id in top_indexes}
 
         if drop_zero_benefit_indexes:
-            # drop indexes with zero benefit
+            # drop indexes with zero (or negative) benefit
             top_indexes = {index_id: index for index_id, index in top_indexes.items() if score[index_id] > 0}
 
 
@@ -1764,32 +1774,6 @@ class WFIT:
             materialized_indexes_table[index.table_name].append(index)
 
         # select top indexes for each table, at most MAX_INDEXES_PER_TABLE top indexes and already materialized indexes combined per table
-        """        
-        top_indexes_keep = defaultdict(list)
-        for table in top_indexes_table:
-            num_keep = self.MAX_INDEXES_PER_TABLE - len(materialized_indexes_table[table])
-            # add top indexes for the table one by one
-            for index in top_indexes_table[table][:num_keep]:
-                if len(top_indexes_keep[table]) == 0:
-                    top_indexes_keep[table].append(index)
-                    continue
-
-                # don't add index if it has a matching prefix with any of the already selected or materialized indexes 
-                if len(index.index_columns) <= matching_prefix_length:
-                    top_indexes_keep[table].append(index)
-                    continue
-
-                found_matching_prefix = False
-                for chosen_index in (top_indexes_keep[table] + materialized_indexes_table[table]):
-                    if index.index_columns[:matching_prefix_length] == chosen_index.index_columns[:matching_prefix_length]:
-                        found_matching_prefix = True
-                        break
-
-                if not found_matching_prefix:
-                    top_indexes_keep[table].append(index)
-                    break
-        """
-
         top_indexes_keep = defaultdict(list)
         for table in top_indexes_table:
             num_keep = self.MAX_INDEXES_PER_TABLE - len(materialized_indexes_table[table])
@@ -1798,9 +1782,7 @@ class WFIT:
             for index in top_indexes_table[table]:
                 if num_keep <= 0:
                     break
-
                 #print(f"\nConsidering candidate index: {index.index_id}")
-
                 # don't add index if it has a matching prefix with any of the already selected or materialized indexes 
                 if len(index.index_columns) < matching_prefix_length:
                     top_indexes_keep[table].append(index)
@@ -1841,7 +1823,7 @@ class WFIT:
         return top_indexes    
 
 
-    # return index creation cost (using estimated index size as proxy for cost)
+    # return index creation cost (using estimated index size as proxy for creation cost)
     def get_index_creation_cost(self, index):
         # return estimated size of index   # (normalize by size of database)
         return self.creation_cost_fudge_factor * index.size #/ self.database_size  
@@ -1868,7 +1850,7 @@ class WFIT:
 
     In this algorithm, for every new query, we extract all cadidate indexes $C$, then use HypoPG to find the subset $S \subseteq C$ of indexes used by the query planner and materialize the indexes in $S$ which don't exist currently.  
 
-    TODO: Put limit on maximum memory for indexes => use some form of bin packing to decide which indexes to keep in the configuration => need to allow index dropping as well as creation, maybe could drop/evict least recently used (LRU) indexes to make room for new indexes.
+    Limit on maximum memory for indexes => use some form of bin packing to decide which indexes to keep in the configuration => need to allow index dropping as well as creation, maybe could drop/evict least recently used (LRU) indexes to make room for new indexes.
 
 """
 
