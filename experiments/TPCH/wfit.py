@@ -1783,15 +1783,20 @@ class WFIT:
                 if num_keep <= 0:
                     break
                 #print(f"\nConsidering candidate index: {index.index_id}")
-                # don't add index if it has a matching prefix with any of the already selected or materialized indexes 
-                # or if all index columns other than leading columns are already covered by another index
-                if len(index.index_columns) < matching_prefix_length:
-                    top_indexes_keep[table].append(index)
-                    #print(f"  Adding index: {index.index_id}")
-                    num_keep -= 1
-                    continue
+                
+                # don't add index if 
+                # 1) it has a matching prefix with any of the already selected or materialized indexes 
+                # 2) if all index columns other than leading columns are already covered by another index
+                # 3) if it is already covered by another index
 
-                found_matching_prefix = False
+
+                # if len(index.index_columns) < matching_prefix_length:
+                #     top_indexes_keep[table].append(index)
+                #     print(f"  Adding index: {index.index_id}")
+                #     num_keep -= 1
+                #     continue
+
+                index_covered = False
                 for already_chosen_index in (top_indexes_keep[table] + materialized_indexes_table[table]):
                     #print(f"  Checking for matching prefix with index: {already_chosen_index.index_id}")
                     #(set(index.index_columns[1:]) == set(already_chosen_index.index_columns[1:]))
@@ -1800,14 +1805,45 @@ class WFIT:
                     if len(index.index_columns[1:]) > 0 and len(already_chosen_index.index_columns[1:]) > 0:
                         matching_non_leading_columns = set(index.index_columns[1:]) == set(already_chosen_index.index_columns[1:])
 
-                    if (index.index_columns[:matching_prefix_length] == already_chosen_index.index_columns[:matching_prefix_length]) or matching_non_leading_columns:
-                        found_matching_prefix = True
+                    index_covered = False
+                    # check if the index+include columns are already covered by another chosen index's index columns
+                    if set(index.index_columns + index.include_columns).issubset(set(already_chosen_index.index_columns)):
+                        index_covered = True
+                    # check if the index columns are the same as another chosen index's index columns and include columns are a subset of the other index's include columns    
+                    if index.index_columns == already_chosen_index.index_columns and set(index.include_columns).issubset(set(already_chosen_index.include_columns)):
+                        index_covered = True
+                    # check if the leading columns of the index are the same as another chosen index's leading columns and set(index+include columns) equals
+                    # the set of the other index's index+include columns
+                    if (index.index_columns[0] == already_chosen_index.index_columns[0]):
+                        #print(f"  Found matching leading column with index: {already_chosen_index.index_id}")    
+                        if (set(index.index_columns + index.include_columns) == set(already_chosen_index.index_columns + already_chosen_index.include_columns)):
+                            index_covered = True 
+
+                    found_matching_prefix = False    
+                    if (index.index_columns[:matching_prefix_length] == already_chosen_index.index_columns[:matching_prefix_length]): 
+                        if (set(index.include_columns) != set(already_chosen_index.include_columns)):
+                            found_matching_prefix = True 
+                    
+                    if found_matching_prefix or matching_non_leading_columns or index_covered:
+                        index_covered = True
                         #print(f"  Found matching prefix with index: {already_chosen_index.index_id}")
+                        #print(f"  Already covered by index: {already_chosen_index.index_id}")
                         break
 
-                if not found_matching_prefix:
+                    # check if the index columns are the same as another chosen index's index columns and the include columns are a superset of the other index's include columns, in this case, replace the other index with the current index
+                    """if index.index_columns == already_chosen_index.index_columns and set(already_chosen_index.include_columns).issubset(set(index.include_columns)):
+                        # check if already chosen index is materialized
+                        if already_chosen_index not in materialized_indexes_table[table]:
+                            top_indexes_keep[table].remove(already_chosen_index)
+                            #print(f"  Replacing index: {already_chosen_index.index_id} with index: {index.index_id}")
+                            break    
+                        else:
+                            found_matching_prefix = True
+                    """
+
+                if not index_covered:
                     top_indexes_keep[table].append(index)
-                    #print(f"  Adding index: {index.index_id}")
+                    #print(f"  Adding index: {index.index_id} -> Include columns: {index.include_columns}")
                     num_keep -= 1
                     continue
 
