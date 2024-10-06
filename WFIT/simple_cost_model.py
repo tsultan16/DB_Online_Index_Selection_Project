@@ -74,38 +74,10 @@ def get_table_stats(table_name, dbname='SSB10'):
 
 
 
-class SimpleCost:
 
-    def __init__(self, stats, estimated_rows, sequential_scan_cost_multiplier=1.0, index_scan_cost_multiplier=2.0, dbname='SSB10'):
-        self.sequentail_scan_cost_multiplier = sequential_scan_cost_multiplier
-        self.index_scan_cost_multiplier = index_scan_cost_multiplier 
-        self.dbname = dbname
-        """    
-        # Get the statistics for all tables in the SSB database
-        self.table_names = ["customer", "dwdate", "lineorder", "part", "supplier"]
-        self.stats = {}
-        self.estimated_rows = {}
-        for table_name in self.table_names:
-            self.stats[table_name], self.estimated_rows[table_name] = get_table_stats(table_name)
-        """
-        self.stats, self.estimated_rows = stats, estimated_rows
-
-        if dbname == 'SSB10':
-            database_tables, pk_columns = get_ssb_schema()
-        elif dbname == 'tpch10':
-            database_tables, pk_columns = get_tpch_schema()
-        else:
-            raise ValueError("Database name not supported, needs to be either 'SSB10' or 'tpch10'")    
-
-
-        # create a dictionary and specify whether each attribute in each table is numeric or char
-        self.data_type_dict = {}
-        for table_name in database_tables.keys():
-            for column_name, column_type in database_tables[table_name]:
-                if ("INT" in column_type) or ("DECIMAL" in column_type) or ("BIT" in column_type):
-                    self.data_type_dict[column_name] = "numeric"
-                else:
-                    self.data_type_dict[column_name] = "char"
+class SelectivityEstimatorStats:
+    def __init__(self, data_type_dict):
+        self.data_type_dict = data_type_dict
 
 
     def convert_string_to_list(self, string, datatype='numeric'):
@@ -132,6 +104,7 @@ class SimpleCost:
             #print(f"Index columns: {index_columns}, Include columns: {include_columns}")
 
             # if boundary value attribute is not an index or include column, selectivity is 1.0
+            # (this is for when the predicate value is itself another attribute)
             if boundary_value not in index_columns and boundary_value not in include_columns:
                 return 1.0
     
@@ -564,52 +537,91 @@ class SimpleCost:
             raise ValueError(f"Operator '{operator}' not supported, needs to be either 'eq', 'range', or 'or'")
             
 
-    # predict the cheapest access paths for executing the query with the given indexes    
-    def predict(self, query_object, indexes, verbose=False):
-        # extract tables and associated columns
+
+class SimpleCost:
+
+    def __init__(self, query_object, stats, estimated_rows, sequential_scan_cost_multiplier=1.0, index_scan_cost_multiplier=2.0, dbname='SSB10'):
+        self.query_object = query_object
+        self.sequentail_scan_cost_multiplier = sequential_scan_cost_multiplier
+        self.index_scan_cost_multiplier = index_scan_cost_multiplier 
+        self.dbname = dbname
+        """    
+        # Get the statistics for all tables in the SSB database
+        self.table_names = ["customer", "dwdate", "lineorder", "part", "supplier"]
+        self.stats = {}
+        self.estimated_rows = {}
+        for table_name in self.table_names:
+            self.stats[table_name], self.estimated_rows[table_name] = get_table_stats(table_name)
+        """
+        self.stats, self.estimated_rows = stats, estimated_rows
+
+        if dbname == 'SSB10':
+            self.database_tables, pk_columns = get_ssb_schema()
+        elif dbname in ['tpch4', 'tpch10']:
+            self.database_tables, pk_columns = get_tpch_schema()
+        else:
+            raise ValueError("Database name not supported, needs to be either 'SSB10' or 'tpch4' or 'tpch10'")    
+
+        # create a dictionary and specify whether each attribute in each table is numeric or char
+        self.data_type_dict = {}
+        for table_name in self.database_tables.keys():
+            for column_name, column_type in self.database_tables[table_name]:
+                if ("INT" in column_type) or ("DECIMAL" in column_type) or ("BIT" in column_type):
+                    self.data_type_dict[column_name] = "numeric"
+                else:
+                    self.data_type_dict[column_name] = "char"
+
+        tables_list = set(list(query_object.payload.keys()) + list(query_object.predicates.keys()))
         self.tables = {}
-        for table_name in query_object.payload:
-            self.tables[table_name] = query_object.payload[table_name]
+        for table_name in tables_list:
+            if table_name not in self.tables:
+                self.tables[table_name] = []   
+            self.tables[table_name] = list(set(query_object.payload.get(table_name, []) + query_object.predicates.get(table_name, [])))   
 
         #print(f"Tables and columns: {self.tables}")
         #print(f"Query predicates: {query_object.predicates}")
 
-        for table_name in query_object.predicates:
-            if table_name not in self.tables:
-                self.tables[table_name] = []   
-            if self.dbname == 'SSB10':    
-                self.tables[table_name] = list(set(self.tables[table_name] + query_object.predicates[table_name]))
-            else:
-                self.tables[table_name] = list(set(self.tables[table_name] + list(query_object.predicates[table_name].keys())))
         # extract the payload
-        payload = query_object.payload
+        self.payload = query_object.payload
+
         # extract the predicates
         self.id2predicate = {}
-        predicate_dict = query_object.predicate_dict
-        predicates = {}
+        self.predicate_dict = query_object.predicate_dict
+        self.predicates = {}
         # map predicate ids to predicate strings
         #id = 0
-        for table_name in predicate_dict:
-            predicates[table_name] = []
-            for pred in predicate_dict[table_name]:
+        for table_name in self.predicate_dict:
+            self.predicates[table_name] = []
+            for pred in self.predicate_dict[table_name]:
                 id = len(self.id2predicate)
-                predicates[table_name].append(id)
+                self.predicates[table_name].append(id)
                 self.id2predicate[id] = pred
                 #id += 1
+    
+        # create a selectivity estimator object
+        self.selectivity_estimator = SelectivityEstimatorStats(self.data_type_dict)
+
+    
+    # predict the cheapest access paths for executing the query with the given indexes    
+    def predict(self, indexes, verbose=False):
 
         if verbose:
             print(f"Tables and columns: {self.tables}")   
-            print(f"Payload: {payload}")
+            print(f"Payload: {self.payload}")
             print(f"Predicates:")
-            for table_name, predicate_list in predicates.items():
+            for table_name, predicate_list in self.predicates.items():
                 print(f"\n{table_name}")
                 for predicate_id in predicate_list:
                     print(f"\t{self.id2predicate[predicate_id]}")        
 
+        # check if indexes is a dictionary
+        if not isinstance(indexes, dict):
+            indexes = {index.index_id: index for index in indexes}
+
         # enumerate the access paths for each table
-        access_paths, predicates = self.enumerate_access_paths(indexes, predicates, payload, verbose)
+        access_paths = self.enumerate_access_paths(indexes, verbose)
         # find the cheapest access paths for each table
-        cheapest_table_access_path = self.find_cheapest_paths(access_paths, predicates, indexes, self.stats, self.estimated_rows, self.sequentail_scan_cost_multiplier, self.index_scan_cost_multiplier, verbose=verbose)
+        cheapest_table_access_path = self.find_cheapest_paths(access_paths, indexes, self.stats, self.estimated_rows, self.sequentail_scan_cost_multiplier, self.index_scan_cost_multiplier, verbose=verbose)
         
         if verbose:
             print(f"\nCheapest access paths: ")
@@ -619,67 +631,28 @@ class SimpleCost:
         indexes_used = []
         for table, (path, cost) in cheapest_table_access_path.items():
             if path['scan_type'] == 'Index Scan' or path['scan_type'] == 'Index Only Scan':
-                indexes_used.append(path['index_id'])
+                # only add if index is not a primary key index
+                if "_pkey" not in path['index_id'] and "pk_" not in path['index_id']:
+                    indexes_used.append(path['index_id'])
 
         return total_cost, indexes_used
     
 
-    def enumerate_access_paths(self, indexes, predicates, payload, verbose):
-        # extract join predicate columns
-        join_predicates = {}
-        join_predicates_temp = {}
-        for table_name in predicates:
-            table_preicates = predicates[table_name]
-            for pred_id in table_preicates:
-                pred = self.id2predicate[pred_id]
-                if pred['join'] == True:
-                    if table_name not in join_predicates_temp:
-                        join_predicates_temp[table_name] = []
-                    join_predicates_temp[table_name].append(pred['column'])
-                    # add the other table's column to the join predicate list
-                    other_table_column = pred['value']
-                    # search for the table name containing the other column
-                    for other_table_name in self.tables:
-                        if other_table_column in self.tables[other_table_name]:
-                            if other_table_name not in join_predicates_temp:
-                                join_predicates_temp[other_table_name] = []
-                            join_predicates_temp[other_table_name].append(other_table_column)
-                            join_pred = pred.copy()
-                            join_pred['column'] = other_table_column
-                            join_pred['value'] = pred['column']
-                            new_id = len(self.id2predicate)
-                            self.id2predicate[new_id] = join_pred 
-                            if other_table_name not in join_predicates:
-                                join_predicates[other_table_name] = []
-                            join_predicates[other_table_name].append(new_id)
-                            break
-
-        if verbose:
-            print(f"Predicates: {predicates}")
-            print(f"Join predicates: {join_predicates}")
-
-        # add join predicates to the main predicate dictionary
-        for table_name in join_predicates:
-            if table_name not in predicates:
-                predicates[table_name] = []
-            predicates[table_name] = list(set(predicates[table_name] + join_predicates[table_name]))
-
-        if verbose:
-            print(f"Updated predicates: {predicates}")
-
+    def enumerate_access_paths(self, indexes, verbose):
+        # Enumerate the feasible access paths for each table in the query
         access_paths = {}
         for table_name in self.tables:
-            if table_name in predicates:
+            if table_name in self.predicates:
                 #table_predicate_cols = [pred['column'] for pred in predicates[table_name] if pred['join'] == False]
-                table_predicate_cols = [self.id2predicate[pred_id]['column'] for pred_id in predicates[table_name]]
-            if table_name in payload:
-                table_payload_cols = [col for col in payload[table_name] if col in self.tables[table_name]]   
-            if table_name in join_predicates_temp:
-                join_predicate_cols = join_predicates_temp[table_name]
+                table_predicate_cols = [self.id2predicate[pred_id]['column'] for pred_id in self.predicates[table_name]]
             else:
-                join_predicate_cols = []    
+                table_predicate_cols = []    
+            if table_name in self.payload:
+                table_payload_cols = [col for col in self.payload[table_name] if col in self.tables[table_name]]   
+            else:
+                table_payload_cols = []      
             
-            relevant_predicate_cols = set(table_predicate_cols).union(join_predicate_cols)
+            relevant_predicate_cols = set(table_predicate_cols)
             table_access_paths = [{'scan_type': 'Sequential Scan'}]
             if verbose:
                 print(f"\nTable predicate columns for {table_name}: {table_predicate_cols}")
@@ -707,7 +680,7 @@ class SimpleCost:
                 for path in paths:
                     print(f"    {path}") 
 
-        return access_paths, predicates        
+        return access_paths        
 
 
 
@@ -737,7 +710,11 @@ class SimpleCost:
     def index_average_rows_per_page(self, index, table_stats_dict):
         columns = list(index.index_columns) + list(index.include_columns)   
         # add up the average width of all columns to get the average width of a row
-        avg_row_size = sum(table_stats_dict[column]['avg_width'] for column in columns)
+        
+        #avg_row_size = sum(table_stats_dict[column]['avg_width'] for column in columns)
+        avg_row_size = sum(table_stats_dict[column]['avg_width'] for column in columns) / len(columns)
+        
+        
         # add the row overhead
         index_row_overhead = 16  # assume 16 bytes 
         avg_row_size += index_row_overhead
@@ -765,7 +742,7 @@ class SimpleCost:
         for pred_id in table_predicates:
             pred = self.id2predicate[pred_id]
             if pred['column'] in index.index_columns and pred['join'] == False:
-                selectivity = self.estimate_selectivity(pred['column'], pred['operator'], pred['value'], table_stats_dict, total_rows, index.index_columns, index.include_columns)
+                selectivity = self.selectivity_estimator.estimate_selectivity(pred['column'], pred['operator'], pred['value'], table_stats_dict, total_rows, index.index_columns, index.include_columns)
                 if verbose: print(f"\t\tSelectivity for predicate {pred}: {selectivity}")
                 combined_selectivity *= selectivity
                 if pred['column'] == leading_index_column:
@@ -790,12 +767,12 @@ class SimpleCost:
         discount_factor = 1.0
         # add higher discount factor if leading columns is in join columns
         if leading_index_column in join_columns:
-            discount_factor *= 0.8
+            discount_factor *= 0.7  # 0.9
         # add lower discount factor if other key or include columns are in join columns
         other_columns = list(index.index_columns[1:]) + list(index.include_columns)
         for column in other_columns:
             if column in join_columns:
-                discount_factor *= 0.9
+                discount_factor *= 0.75 # 0.95 
                 #break # only apply discount once
 
         # return total cost as the sum of index and table pages
@@ -827,7 +804,7 @@ class SimpleCost:
         return sequential_scan_cost
 
 
-    def find_cheapest_paths(self, access_paths, predicates, indexes, stats, estimated_rows, sequential_scan_cost_multiplier=1.0, index_scan_cost_multiplier=3.0, verbose=False):
+    def find_cheapest_paths(self, access_paths, indexes, stats, estimated_rows, sequential_scan_cost_multiplier=1.0, index_scan_cost_multiplier=3.0, verbose=False):
         cheapest_table_access_path = {}    
         if verbose: print(f"Finding cheapest access paths for tables: {access_paths.keys()}")
         # enumerate over tables that need to be accessed
@@ -847,11 +824,11 @@ class SimpleCost:
                 elif path['scan_type'] == 'Index Scan':
                     index_id = path['index_id']
                     index = indexes[index_id]
-                    cost = self.estimate_index_scan_cost(index, stats[table_name], predicates[table_name], estimated_rows[table_name], cost_multiplier=index_scan_cost_multiplier, verbose=verbose)    
+                    cost = self.estimate_index_scan_cost(index, stats[table_name], self.predicates[table_name], estimated_rows[table_name], cost_multiplier=index_scan_cost_multiplier, verbose=verbose)    
                 elif path['scan_type'] == 'Index Only Scan':
                     index_id = path['index_id']
                     index = indexes[index_id]
-                    cost = self.estimate_index_scan_cost(index, stats[table_name], predicates[table_name], estimated_rows[table_name], cost_multiplier=index_scan_cost_multiplier, index_only_scan=True, verbose=verbose)
+                    cost = self.estimate_index_scan_cost(index, stats[table_name], self.predicates[table_name], estimated_rows[table_name], cost_multiplier=index_scan_cost_multiplier, index_only_scan=True, verbose=verbose)
                 else:
                     raise ValueError("Scan type not supported")            
 
