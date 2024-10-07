@@ -331,7 +331,7 @@ class SelectivityEstimatorStats:
         return selectivity
 
 
-    def estimate_selectivity_eq(self, attribute, value, stats_dict):
+    def estimate_selectivity_eq(self, attribute, value, stats_dict, total_rows):
         data_type = self.data_type_dict[attribute]
         # get the column statistics
         stats = stats_dict[attribute]
@@ -363,9 +363,13 @@ class SelectivityEstimatorStats:
 
         # if not a common value, estimate using n_distinct
         if n_distinct < 0:
-            n_distinct = -n_distinct
+            # negative n_distinct means it is the count as a fraction of total rows
+            n_distinct = -n_distinct * total_rows
 
-        selectivity = 1.0 / n_distinct    
+        selectivity = 1.0 / n_distinct   
+
+        #print(f"stats: \n{stats}")
+        #print(f"n_distinct: {n_distinct}, selectivity: {selectivity}")
 
         if histogram_bounds is not None:
             histogram_bounds = self.convert_string_to_list(histogram_bounds, data_type)
@@ -407,9 +411,9 @@ class SelectivityEstimatorStats:
         return selectivity
 
 
-    def estimate_selectivity_neq(self, attribute, value, stats_dict):
+    def estimate_selectivity_neq(self, attribute, value, stats_dict, total_rows):
         # Use the existing equality selectivity estimation
-        equality_selectivity = self.estimate_selectivity_eq(attribute, value, stats_dict)
+        equality_selectivity = self.estimate_selectivity_eq(attribute, value, stats_dict, total_rows)
         
         # Calculate the selectivity for the != predicate
         selectivity = 1.0 - equality_selectivity
@@ -518,9 +522,9 @@ class SelectivityEstimatorStats:
     def estimate_selectivity(self, attribute, operator, value, stats_dict, total_rows, index_columns=None, include_columns=None):
         operator = operator.lower()
         if operator in ['eq', '=']:
-            return self.estimate_selectivity_eq(attribute, value, stats_dict)
+            return self.estimate_selectivity_eq(attribute, value, stats_dict, total_rows)
         elif operator == 'neq':
-            return self.estimate_selectivity_neq(attribute, value, stats_dict)
+            return self.estimate_selectivity_neq(attribute, value, stats_dict, total_rows)
         elif operator == 'range':
             return self.estimate_selectivity_range(attribute, value, stats_dict, total_rows)
         elif operator in ['>', '<', '>=', '<=']:
@@ -540,19 +544,11 @@ class SelectivityEstimatorStats:
 
 class SimpleCost:
 
-    def __init__(self, query_object, stats, estimated_rows, sequential_scan_cost_multiplier=1.0, index_scan_cost_multiplier=2.0, dbname='SSB10'):
+    def __init__(self, query_object, stats, estimated_rows, sequential_scan_cost_multiplier=1.0, index_scan_cost_multiplier=1.0, dbname='SSB10'):
         self.query_object = query_object
         self.sequentail_scan_cost_multiplier = sequential_scan_cost_multiplier
         self.index_scan_cost_multiplier = index_scan_cost_multiplier 
         self.dbname = dbname
-        """    
-        # Get the statistics for all tables in the SSB database
-        self.table_names = ["customer", "dwdate", "lineorder", "part", "supplier"]
-        self.stats = {}
-        self.estimated_rows = {}
-        for table_name in self.table_names:
-            self.stats[table_name], self.estimated_rows[table_name] = get_table_stats(table_name)
-        """
         self.stats, self.estimated_rows = stats, estimated_rows
 
         if dbname == 'SSB10':
