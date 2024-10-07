@@ -557,10 +557,10 @@ class SimpleCost:
 
         if dbname == 'SSB10':
             self.database_tables, pk_columns = get_ssb_schema()
-        elif dbname in ['tpch4', 'tpch10']:
+        elif dbname in ['tpch4', 'tpch10', 'tpch10_skew']:
             self.database_tables, pk_columns = get_tpch_schema()
         else:
-            raise ValueError("Database name not supported, needs to be either 'SSB10' or 'tpch4' or 'tpch10'")    
+            raise ValueError("Database name not supported, needs to be either 'SSB10' or 'tpch4' or 'tpch10' or 'tpch10_skew'")    
 
         # create a dictionary and specify whether each attribute in each table is numeric or char
         self.data_type_dict = {}
