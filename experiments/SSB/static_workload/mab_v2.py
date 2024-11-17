@@ -21,7 +21,7 @@ from functools import lru_cache
 import time
 
 
-DBNAME = 'tpch10'
+DBNAME = 'SSB10'
 
 # get table size, row count, sequential scan time and column info
 @lru_cache(maxsize=None)
@@ -559,11 +559,7 @@ class MAB:
                                 matching_prefix = True
                                 break
 
-                            # don't keep index if its all columns set is a subset of the selected index's all column set
-                            #if set(list(candidate_indexes[index_id].index_columns) + list(candidate_indexes[index_id].include_columns)).issubset(set(list(selected_index.#index_columns) + list(selected_index.include_columns))):
-                            #    matching_prefix = True
-                            #    break
-
+                    
                     if not matching_prefix:
                         selected_indexes.append(candidate_indexes[index_id])
                         memory_used += self.index_size[index_id]

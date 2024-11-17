@@ -26,10 +26,7 @@ DBNAME = 'tpch10'
 # get table size, row count, sequential scan time and column info
 @lru_cache(maxsize=None)
 def get_table_and_column_details():
-    if DBNAME == 'SSB10':
-        schema, pk_columns = get_ssb_schema()
-    else:
-        schema, pk_columns = get_tpch_schema()
+    schema, pk_columns = get_tpch_schema()
     columns = {}
     tables = {}
     for table_name in schema:
@@ -139,9 +136,6 @@ class MAB:
         self.recommendation_time = []
         self.materialization_time = []
         self.execution_time = []
-        self.current_donfiguration = []
-        self.indexes_added = []
-        self.indexes_removed = []
 
         # constants
         self.MAX_INDEXES_PER_TABLE = max_indexes_per_table
@@ -150,6 +144,7 @@ class MAB:
         self.MAX_INCLUDE_COLUMNS = max_include_columns
         self.SMALL_TABLE_IGNORE = 1000
         self.TABLE_MIN_SELECTIVITY = 0.5
+        self.MAX_INDEXES_PER_TABLE = 5
         self.TABLE_SCAN_TIME_HISTORY = 1000
 
         
@@ -162,12 +157,12 @@ class MAB:
 
         # identify new query templates from the mini workload and update stats    
         if verbose: print(f"\nIdentifying new query templates from the mini workload...")
-        self.identify_new_query_templates(mini_workload, verbose=False)
+        self.identify_new_query_templates(mini_workload, verbose)
 
         # select queries of interest (QoIs) from past workload and use them to extract candidate indexes, i.e. bandit arms
         if verbose: print(f"\nSelecting QoIs and extracting candidate indexes...")
-        QoIs = self.select_queries_of_interest(mini_workload, verbose=False)
-        self.candidate_indexes = self.extract_candidate_indexes(QoIs, verbose=False)
+        QoIs = self.select_queries_of_interest(mini_workload, verbose)
+        self.candidate_indexes = self.extract_candidate_indexes(QoIs, verbose)
 
         # generate context vectors for each candidate index
         if verbose: print(f"\nGenerating context vectors...")
@@ -215,7 +210,7 @@ class MAB:
 
 
     # identify new query templates from the mini workload and update stats
-    def identify_new_query_templates(self, mini_workload, verbose=False):
+    def identify_new_query_templates(self, mini_workload, verbose):
         for query in mini_workload:
             if query.template_id not in self.query_store:
                 # add to query store
@@ -235,14 +230,13 @@ class MAB:
                 print(f"\t\tTemplate ID: {query.template_id}, Frequency: {query.frequency}, First Seen: {query.first_seen}, Last Seen: {query.last_seen}")
 
     # select queries of interest (QoIs) from past workload and use them to extract candidate indexes, i.e. bandit arms
-    def select_queries_of_interest(self, mini_workload, verbose=False):
+    def select_queries_of_interest(self, mini_workload, verbose):
         # select queries of interest (QoIs) from past workload and use them to extract candidate indexes, i.e. bandit arms
         QoIs = []
         for query in self.query_store.values():
             print(f"Query template: {query.template_id}, Query last seen: {query.last_seen}")
             # select queries that have been seen in the last qoi_memory rounds, excluding new templates from current round
-            if self.current_round - query.last_seen <= self.qoi_memory:
-                #if query.first_seen != self.current_round:
+            if self.current_round - query.last_seen <= self.qoi_memory and query.first_seen != self.current_round:
                 QoIs.append(query)
 
         if verbose:
@@ -254,7 +248,7 @@ class MAB:
 
 
     # extract candidate indexes from QoIs
-    def extract_candidate_indexes(self, QoIs, verbose=False):
+    def extract_candidate_indexes(self, QoIs, verbose):
         # extract candidate indexes from QoIs
         candidate_indexes = {}
         for query_object in QoIs:
@@ -398,7 +392,6 @@ class MAB:
         # solve 0-1 knapsack problem to select best configuration
         selected_indexes = self.solve_knapsack(upper_bounds, candidate_indexes, verbose)
         #selected_indexes = self.submodular_oracle(upper_bounds, candidate_indexes, verbose)
-        
         # convert to dict
         selected_indexes = {index.index_id: index for index in selected_indexes}
         # decay alpha
@@ -515,9 +508,9 @@ class MAB:
 
         
     # greedy 1/2 approximation algorithm for knapsack problem
-    def solve_knapsack(self, upper_bounds, candidate_indexes, verbose, remove_negative_ucb=False, ignore_size=True, prefix_length=1):
+    def solve_knapsack(self, upper_bounds, candidate_indexes, verbose, remove_negative_ucb=False, ignore_size=True):
         # keep at most self.MAX_INDEXES_PER_TABLE indexes per table
-        table_count = defaultdict(int)    
+        table_index_counts = defaultdict(int)    
 
         # compute estimated reward upper bound to index size ratio
         if remove_negative_ucb:
@@ -532,61 +525,19 @@ class MAB:
                 ratios = {index_id: upper_bound / self.index_size[index_id] for index_id, upper_bound in upper_bounds.items()}  
         # sort indexes by decreasing order of ratio
         sorted_indexes = sorted(ratios, key=ratios.get, reverse=True)
-        
         # select indexes greedily to fit within memory budget
         selected_indexes = []
         memory_used = 0
         for index_id in sorted_indexes:
             if memory_used + self.index_size[index_id] <= self.config_memory_MB:
                 # keep at most self.MAX_INDEXES_PER_TABLE indexes per table
-                if table_count[candidate_indexes[index_id].table_name] < self.MAX_INDEXES_PER_TABLE:
-                    matching_prefix = False
-                    for selected_index in selected_indexes:
-                        if candidate_indexes[index_id].table_name == selected_index.table_name:
-                            
-                            # don't keep index if it has a matching prefix with any already selected index
-                            if candidate_indexes[index_id].index_columns[:prefix_length] == selected_index.index_columns[:prefix_length]:
-                                matching_prefix = True
-                                break    
-
-                            # don't keep index if all its index column set equals the selected index column set
-                            if set(candidate_indexes[index_id].index_columns) == set(selected_index.index_columns):
-                                matching_prefix = True
-                                break
-
-                            # don't keep index if index column set is a subset of the selected index column set
-                            if set(candidate_indexes[index_id].index_columns).issubset(set(selected_index.index_columns)):
-                                matching_prefix = True
-                                break
-
-                            # don't keep index if its all columns set is a subset of the selected index's all column set
-                            #if set(list(candidate_indexes[index_id].index_columns) + list(candidate_indexes[index_id].include_columns)).issubset(set(list(selected_index.#index_columns) + list(selected_index.include_columns))):
-                            #    matching_prefix = True
-                            #    break
-
-                    if not matching_prefix:
-                        selected_indexes.append(candidate_indexes[index_id])
-                        memory_used += self.index_size[index_id]
-                        table_count[candidate_indexes[index_id].table_name] += 1    
-                    
-            if memory_used >= self.config_memory_MB:
-                break 
-
-
-        """
-        selected_indexes = []
-        memory_used = 0
-        for index_id in sorted_indexes:
-            if memory_used + self.index_size[index_id] <= self.config_memory_MB:
-                # keep at most self.MAX_INDEXES_PER_TABLE indexes per table
-                if table_count[candidate_indexes[index_id].table_name] < self.MAX_INDEXES_PER_TABLE:
+                if table_index_counts[candidate_indexes[index_id].table_name] < self.MAX_INDEXES_PER_TABLE:
                     selected_indexes.append(candidate_indexes[index_id])
                     memory_used += self.index_size[index_id]
-                    table_count[candidate_indexes[index_id].table_name] += 1
+                    table_index_counts[candidate_indexes[index_id].table_name] += 1
             
             if memory_used >= self.config_memory_MB:
                 break 
-        """
 
         if verbose:
             print(f"\nMax memory budget: {self.config_memory_MB} MB, Used memory: {memory_used} MB")
@@ -608,10 +559,6 @@ class MAB:
         if verbose:
             print(f"\n\tIndexes Added: {[index.index_id for index in indexes_added]}")
             print(f"\n\tIndexes Dropped: {[index.index_id for index in indexes_dropped]}\n")
-
-        self.current_donfiguration.append([index.index_id for index in self.indexes_currently_materialized.values()])
-        self.indexes_added.append([index.index_id for index in indexes_added])
-        self.indexes_removed.append([index.index_id for index in indexes_dropped])
 
         # drop indexes that are no longer selected
         conn = create_connection(dbname=DBNAME)
@@ -643,14 +590,14 @@ class MAB:
             if restart_server:
                 # restart the server before each query execution
                 restart_postgresql()
-            if verbose: print(f"\nExecuting query# {i+1}", end='\r', flush=True)
+            if verbose: print(f"\nExecuting query# {i+1}")
             # execute the query and observe the reward
             conn = create_connection(dbname=DBNAME)
             execution_time, results_rows, table_access_info, index_access_info, bitmap_heapscan_info = execute_query(conn, query.query_string, with_explain=True,  return_access_info=True, print_results=False)
             close_connection(conn)
             execution_info.append((execution_time, table_access_info, index_access_info, bitmap_heapscan_info))
             total_execution_time += execution_time
-            if verbose: print(f"\nQuery# {i+1}, Execution Time: {execution_time/1000.0} s")
+
 
 
         if verbose:
@@ -660,7 +607,7 @@ class MAB:
                 #print(f"\t\tTable Access Info: {info[1]}")
                 #print(f"\t\tIndex Access Info: {info[2]}")
                 #print(f"\t\tBitmap Heap Scan Info: {info[3]}")
-                print(f"\nQuery# {i+1} , Execution Time: {info[0]/1000.0} s, Tables Accessed: {list(info[1].keys())}, Indexes Accessed: {list(info[2].keys())}, Bitmap Heap Scans : {list(bitmap_heapscan_info.keys())}")
+                print(f"\nQuery# {i+1} , Execution Time: {info[0]}, Tables Accessed: {list(info[1].keys())}, Indexes Accessed: {list(info[2].keys())}, Bitmap Heap Scans : {list(bitmap_heapscan_info.keys())}")
             print()    
 
         # extract index scan times and table sequential scan times from the execution info and shape index reward

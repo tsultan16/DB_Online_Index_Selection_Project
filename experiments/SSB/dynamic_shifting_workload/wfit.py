@@ -32,7 +32,7 @@ import math
 #from functools import lru_cache
 
 
-DBNAME = 'tpch10'
+DBNAME = 'SSB10'
 
 
 """
@@ -68,7 +68,7 @@ class IBG:
         #print(f"Candidate indexes: {self.C}")
         
         if IBG._pk_indexes is None:
-            self.pk_indexes = tpch_pk_index_objects()
+            self.pk_indexes = ssb_pk_index_objects()
 
         if simple_cost_model is not None:
             self.simple_cost = True
@@ -863,19 +863,18 @@ class WFIT:
             end_time_1 = time.time()
             analysis_time = end_time_1 - start_time_1
             end_time_2 = time.time()
-            if verbose: 
-                print(f"\nPartitioning time: {partitioning_time} s")
-                print(f"Repartitioning time: {repartitioning_time} s")
-                print(f"WFA update time: {analysis_time} s")
-                print(f"Total recommendation time for query: {end_time_2 - start_time_2} s\n")
-
-            if verbose:
-                print(f"Recommendation Indexes added:   {[index.index_id for index in all_indexes_added]}")
-                print(f"\nRecommendation Indexes removed: {[index.index_id for index in all_indexes_removed]}")
+            #if verbose: 
+                
+            print(f"\nPartitioning time: {partitioning_time} s")
+            print(f"Repartitioning time: {repartitioning_time} s")
+            print(f"WFA update time: {analysis_time} s")
+            print(f"Total recommendation time for query: {end_time_2 - start_time_2} s")
+            print(f"\nRecommendation Indexes added:   {[index.index_id for index in all_indexes_added]}")
+            print(f"\nRecommendation Indexes removed: {[index.index_id for index in all_indexes_removed]}")
 
         end_time = time.time()
         recommendation_time = end_time - start_time
-        if verbose: print(f"\nRecommendation time for batch of queries: {recommendation_time} s")
+        print(f"\nRecommendation time for batch of queries: {recommendation_time} s")
 
         # find out which indexes are added and removed at the end of the batch
         all_indexes_added = []
@@ -894,12 +893,12 @@ class WFIT:
         else:
             config_materialization_time = 0
         
-        if verbose: 
-            print(f"\nConfiguration materialization time: {config_materialization_time} s\n")
-            print(f"{len(self.M)} currently materialized indexes: {[index.index_id for index in self.M.values()]}\n")
-            print(f"\n{len(all_indexes_added)} indexes added this round: {[index.index_id for index in all_indexes_added]}")
-            print(f"\n{len(all_indexes_removed)} indexes removed this round: {[index.index_id for index in all_indexes_removed]}")
-            print(f"\nTotal Configuration Size: {sum([index.size for index in self.M.values()])} MB\n")
+    
+        print(f"\nConfiguration materialization time: {config_materialization_time} s\n")
+        print(f"{len(self.M)} currently materialized indexes: {[index.index_id for index in self.M.values()]}\n")
+        print(f"\n{len(all_indexes_added)} indexes added this round: {[index.index_id for index in all_indexes_added]}")
+        print(f"\n{len(all_indexes_removed)} indexes removed this round: {[index.index_id for index in all_indexes_removed]}")
+        print(f"\nTotal Configuration Size: {sum([index.size for index in self.M.values()])} MB\n")
 
         self.configuration_stats["current_configuration"].append([index.index_id for index in self.M.values()])
         self.configuration_stats["indexes_added"].append([index.index_id for index in all_indexes_added])
@@ -1432,7 +1431,7 @@ class WFIT:
         # create a new simple cost model for the query
         if self.simple_cost:
             if WFIT._stats_cache is None:
-                tables, pk_columns = get_tpch_schema()
+                tables, pk_columns = get_ssb_schema()
                 table_names = list(tables.keys())
                 stats = {}
                 estimated_rows = {}
@@ -1770,11 +1769,12 @@ class WFIT:
         for table in top_indexes_table:
             top_indexes_table[table] = sorted(top_indexes_table[table], key=lambda x: score[x.index_id], reverse=True)
         
-        print(f"Top indexes by table:")
-        for table in top_indexes_table:
-            print(f"\tTable: {table}, Indexes: ")
-            for index in top_indexes_table[table]:
-                print(f"\t\tIndex {index.index_id}: {score[index.index_id]}")
+        if verbose:
+            print(f"Top indexes by table:")
+            for table in top_indexes_table:
+                print(f"\tTable: {table}, Indexes: ")
+                for index in top_indexes_table[table]:
+                    print(f"\t\tIndex {index.index_id}: {score[index.index_id]}")
 
         # get materialized indexes by table
         materialized_indexes_table = defaultdict(list)
@@ -1868,7 +1868,7 @@ class WFIT:
                     num_keep -= 1
                     continue
 
-            print(f"\nSelected indexes for table: {table}: {[index.index_id for index in top_indexes_keep[table]]}")    
+            print(f"\nFiltered Top indexes for table: {table}: {[index.index_id for index in top_indexes_keep[table]]}")    
 
         # make sure the number of selected indexes per table is at most MAX_INDEXES_PER_TABLE
         for table in top_indexes_keep:

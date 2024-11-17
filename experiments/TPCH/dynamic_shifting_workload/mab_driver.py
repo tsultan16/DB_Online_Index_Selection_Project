@@ -27,28 +27,23 @@ def main():
         sys.exit(1)
 
 
-    # load tpch static workload from a file
-    with open('../../../PostgreSQL/tpch_static_workload_1.pkl', 'rb') as f:
+    # load tpch dynamic workload from a file
+    with open('../../../PostgreSQL/tpch_dynamic_shifting_workload_1.pkl', 'rb') as f:
         workload_dict = pickle.load(f) 
 
     workload_metadata = workload_dict['metadata']
     workload = workload_dict['workload']    
 
-    print(f"Loaded static workload from file with {len(workload)} queries.")
-    print(f"Num rounds: {workload_metadata['num_rounds']}, Templates per round: {workload_metadata['template_sequence']}")
+    print(f"Loaded dynamic shifting workload from file with {len(workload)} queries.")
+    print(f"Num rounds: {workload_metadata['num_rounds']}, Templates in sequence 1: {workload_metadata['sequence_1']}, Templates in sequence 2: {workload_metadata['sequence_2']}")
 
 
     # process the workload
     if mode == 1:
-        # split the workload into batches
-        batch_size = len(workload_metadata['template_sequence'])
-        num_batches = len(workload) // batch_size
-        workload = [workload[i*batch_size:(i+1)*batch_size] for i in range(num_batches)]
-        
         # instantiate MAB
         mab = MAB(alpha=20.0, alpha_decay_rate=0.995, vlambda=0.2, creation_time_reduction_factor=3, config_memory_MB=1024*20, qoi_memory=3, max_indexes_per_table=9, max_index_columns=3, include_cols=True, max_include_columns=3)
 
-        print(f"Batch processing {n} batches of {batch_size} queries each...")
+        print(f"Batch processing {n} batches of {5} queries each...")
         for i in range(n):
             print('\n------------------------------------------------------------------')
             print(f"Processing batch ({i+1}/{n})...")

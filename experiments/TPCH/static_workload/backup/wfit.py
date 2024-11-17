@@ -53,7 +53,7 @@ class Node:
 # class for creating and storing the IBG
 class IBG:
     # Class-level cache
-    _pk_indexes = None
+    _tpch_pk_indexes = None
 
     def __init__(self, query_object, C, existing_indexes=[], execution_cost_scaling=1e-6, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, simple_cost_model=None):
         self.q = query_object
@@ -67,7 +67,7 @@ class IBG:
         print(f"Number of candidate indexes: {len(self.C)}")
         #print(f"Candidate indexes: {self.C}")
         
-        if IBG._pk_indexes is None:
+        if IBG._tpch_pk_indexes is None:
             self.pk_indexes = tpch_pk_index_objects()
 
         if simple_cost_model is not None:
@@ -683,7 +683,7 @@ class WFIT:
     _stats_cache = None
     _estimated_rows_cache = None
 
-    def __init__(self, max_key_columns=None, include_cols=False, max_include_columns=3, simple_cost=False, enable_stable_partition_locking=True, max_indexes_per_table=3, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, idxCnt=25, stateCnt=500, histSize=1000, rand_cnt=100, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1, join_column_discount=0.7):
+    def __init__(self, max_key_columns=None, include_cols=False, max_include_columns=3, simple_cost=False, enable_stable_partition_locking=True, max_indexes_per_table=3, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=100, normalize_doi=True, idxCnt=25, stateCnt=500, histSize=1000, rand_cnt=100, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1):
         # bulk drop all materialized secondary indexes
         print(f"*** Dropping all materialized secondary indexes...")
         conn = create_connection(dbname=DBNAME)
@@ -741,8 +741,6 @@ class WFIT:
         self.rand_cnt = rand_cnt
         # fudge factor for index creation cost
         self.creation_cost_fudge_factor = creation_cost_fudge_factor
-        # discount factor for join columns
-        self.join_column_discount = join_column_discount
         # fudge factor for execution cost
         self.execution_cost_scaling = execution_cost_scaling
         # growing list of candidate indexes (initially contains S_0)
@@ -792,11 +790,9 @@ class WFIT:
         # set random seed
         random.seed(1234)
         # track time 
-        self.batch_recommendation_time = []
-        self.batch_materialization_time = []
-        self.batch_execution_time = []
+        self.recommendation_time = []
+        self.materialization_time = []
         self.execution_time = []
-        self.configuration_stats = {"current_configuration": [], "indexes_added": [], "indexes_removed": []}
         self.total_recommendation_time = 0
         self.total_materialization_time = 0
         self.total_execution_time_actual = 0
@@ -901,10 +897,6 @@ class WFIT:
             print(f"\n{len(all_indexes_removed)} indexes removed this round: {[index.index_id for index in all_indexes_removed]}")
             print(f"\nTotal Configuration Size: {sum([index.size for index in self.M.values()])} MB\n")
 
-        self.configuration_stats["current_configuration"].append([index.index_id for index in self.M.values()])
-        self.configuration_stats["indexes_added"].append([index.index_id for index in all_indexes_added])
-        self.configuration_stats["indexes_removed"].append([index.index_id for index in all_indexes_removed])
-
         # restart the server before batch query execution
         #restart_postgresql()    
 
@@ -935,9 +927,8 @@ class WFIT:
         self.total_materialization_time += config_materialization_time
         self.total_execution_time_actual += batch_execution_time
         self.total_time_actual += recommendation_time + config_materialization_time + batch_execution_time
-        self.batch_recommendation_time.append(recommendation_time)
-        self.batch_materialization_time.append(config_materialization_time)
-        self.batch_execution_time.append(batch_execution_time)
+        self.recommendation_time.append(recommendation_time)
+        self.materialization_time.append(config_materialization_time)
 
         print(f"\nTotal recommendation time so far --> {self.total_recommendation_time} seconds")
         print(f"Total materialization time so far --> {self.total_materialization_time} seconds")
@@ -946,6 +937,7 @@ class WFIT:
         print(f"\nIndex usage stats:")
         for index_id in self.index_usage:
             print(f"\tIndex {index_id}: {self.index_usage[index_id]}")
+
 
 
     # update WFIT step for next query in workload (this is the MAIN INTERFACE for generating an index configuration recommendation)
@@ -1442,7 +1434,7 @@ class WFIT:
                 WFIT._stats_cache = stats
                 WFIT._estimated_rows_cache = estimated_rows
 
-            self.simple_cost_model = SimpleCost(query_object, WFIT._stats_cache, WFIT._estimated_rows_cache, index_scan_cost_multiplier=1.0, join_column_discount=self.join_column_discount, dbname=DBNAME) # 1.5)
+            self.simple_cost_model = SimpleCost(query_object, WFIT._stats_cache, WFIT._estimated_rows_cache, index_scan_cost_multiplier=1.0, dbname=DBNAME) # 1.5)
         else:
             self.simple_cost_model = None
 
@@ -2147,7 +2139,6 @@ def execute_workload_noIndex(workload, drop_indexes=False, restart_server=False,
     print(f"Executing workload without any indexes...")
     # execute workload without any indexes
     total_time = 0
-    query_execution_time = []
     for i, query_object in enumerate(workload):
         if restart_server:
             # restart the server before each query execution
@@ -2158,13 +2149,12 @@ def execute_workload_noIndex(workload, drop_indexes=False, restart_server=False,
         execution_time, rows, table_access_info, index_access_info, bitmap_heapscan_info = execute_query(conn, query_object.query_string, with_explain=True, return_access_info=True)
         close_connection(conn)
         execution_time /= 1000
-        query_execution_time.append(execution_time)
         print(f"\tExecution_time: {execution_time} s, Indexes accessed: {list(index_access_info.keys())}\n")
         total_time += execution_time
 
     print(f"Total execution time for workload without any indexes: {total_time} seconds")
     
-    return total_time, query_execution_time    
+    return total_time    
 
 
 

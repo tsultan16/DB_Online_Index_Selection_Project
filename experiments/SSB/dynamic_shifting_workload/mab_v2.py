@@ -21,7 +21,7 @@ from functools import lru_cache
 import time
 
 
-DBNAME = 'tpch10'
+DBNAME = 'SSB10'
 
 # get table size, row count, sequential scan time and column info
 @lru_cache(maxsize=None)
@@ -515,7 +515,7 @@ class MAB:
 
         
     # greedy 1/2 approximation algorithm for knapsack problem
-    def solve_knapsack(self, upper_bounds, candidate_indexes, verbose, remove_negative_ucb=False, ignore_size=True, prefix_length=1):
+    def solve_knapsack(self, upper_bounds, candidate_indexes, verbose, remove_negative_ucb=True, ignore_size=True, prefix_length=1):
         # keep at most self.MAX_INDEXES_PER_TABLE indexes per table
         table_count = defaultdict(int)    
 
@@ -559,11 +559,7 @@ class MAB:
                                 matching_prefix = True
                                 break
 
-                            # don't keep index if its all columns set is a subset of the selected index's all column set
-                            #if set(list(candidate_indexes[index_id].index_columns) + list(candidate_indexes[index_id].include_columns)).issubset(set(list(selected_index.#index_columns) + list(selected_index.include_columns))):
-                            #    matching_prefix = True
-                            #    break
-
+                    
                     if not matching_prefix:
                         selected_indexes.append(candidate_indexes[index_id])
                         memory_used += self.index_size[index_id]

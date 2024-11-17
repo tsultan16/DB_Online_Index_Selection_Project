@@ -26,21 +26,21 @@ def main():
         print("Invalid batch processing flag. Exiting...")
         sys.exit(1)
 
-    # load tpch static workload from a file
-    with open('../../../PostgreSQL/tpch_static_workload_1.pkl', 'rb') as f:
+    # load tpch dynamic workload from a file
+    with open('../../../PostgreSQL/tpch_dynamic_shifting_workload_1.pkl', 'rb') as f:
         workload_dict = pickle.load(f) 
 
     workload_metadata = workload_dict['metadata']
     workload = workload_dict['workload']    
 
-    print(f"Loaded static workload from file with {len(workload)} queries.")
-    print(f"Num rounds: {workload_metadata['num_rounds']}, Templates per round: {workload_metadata['template_sequence']}")
+    print(f"Loaded dynamic shifting workload from file with {len(workload)} queries.")
+    print(f"Num rounds: {workload_metadata['num_rounds']}, Templates in sequence 1: {workload_metadata['sequence_1']}, Templates in sequence 2: {workload_metadata['sequence_2']}")
 
     # instantiate WFIT
     use_simple_cost = False #True
     max_indexes_per_table = 9 #6 
     max_U = 72  #70
-    ibg_max_nodes = 300 #500
+    ibg_max_nodes = 150 #300
     doi_max_nodes = 20 #20
     max_doi_iters_per_node = 100 #200
     normalize_doi = True # False
@@ -68,17 +68,13 @@ def main():
 
             #wfit = WFIT(max_key_columns=3, include_cols=True, max_include_columns=3, simple_cost=True, enable_stable_partition_locking=enable_stable_partition_locking, max_indexes_per_table=max_indexes_per_table, max_U=max_U, ibg_max_nodes=ibg_max_nodes, doi_max_nodes=doi_max_nodes, max_doi_iters_per_node=max_doi_iters_per_node, normalize_doi=normalize_doi, idxCnt=idxCnt, stateCnt=stateCnt, rand_cnt=rand_cnt, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1e-3, join_column_discount=0.7) 
 
-            wfit = WFIT(max_key_columns=3, include_cols=True, max_include_columns=3, simple_cost=True, enable_stable_partition_locking=enable_stable_partition_locking, max_indexes_per_table=max_indexes_per_table, max_U=max_U, ibg_max_nodes=ibg_max_nodes, doi_max_nodes=doi_max_nodes, max_doi_iters_per_node=max_doi_iters_per_node, normalize_doi=normalize_doi, idxCnt=idxCnt, stateCnt=stateCnt, rand_cnt=rand_cnt, execution_cost_scaling=1e-6, creation_cost_fudge_factor=4e-7, join_column_discount=0.7) 
+            wfit = WFIT(max_key_columns=3, include_cols=True, max_include_columns=3, simple_cost=True, enable_stable_partition_locking=enable_stable_partition_locking, max_indexes_per_table=max_indexes_per_table, max_U=max_U, ibg_max_nodes=ibg_max_nodes, doi_max_nodes=doi_max_nodes, max_doi_iters_per_node=max_doi_iters_per_node, normalize_doi=normalize_doi, idxCnt=idxCnt, stateCnt=stateCnt, rand_cnt=rand_cnt, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1.0e-7, join_column_discount=0.7) 
 
 
     # process the workload
     if batch_processing == 1:
-        # split the workload into batches
-        batch_size = len(workload_metadata['template_sequence'])
-        num_batches = len(workload) // batch_size
-        workload = [workload[i*batch_size:(i+1)*batch_size] for i in range(num_batches)]
-        
-        print(f"Batch processing {n} batches of {batch_size} queries each...")
+
+        print(f"Batch processing {n} batches of 5 queries each...")
         for i in range(n):
             print('------------------------------------------------------------------')
             print(f"Processing batch ({i+1}/{n})...")
@@ -112,18 +108,21 @@ def main():
             print("\n\n")
 
     elif batch_processing == 0:
+
+        workload_flattened = [query for batch in workload[:n] for query in batch]
+        print(f"Number of queries in the workload: {len(workload_flattened)}")
+
         # execute the workload with no indexes
-        total_time, execution_time = execute_workload_noIndex(workload[:n], drop_indexes=True, restart_server=True, clear_cache=True)
+        total_time, execution_time = execute_workload_noIndex(workload_flattened, drop_indexes=True, restart_server=True, clear_cache=True)
+
 
         # split execution time into miniworkload execution time
-        batch_execution_time = [sum(execution_time[i:i+10]) for i in range(0, len(execution_time), 10)]
+        batch_execution_time = [sum(execution_time[i:i+5]) for i in range(0, len(execution_time), 5)]
 
         # save experiment results to pickle file
         results = {}
         results["total_time"] = total_time
         results["batch_execution_time"] = batch_execution_time
-        results["num_rounds"] = workload_metadata['num_rounds']
-        results["template_sequence"] = workload_metadata['template_sequence']
         
         with open(f'noindex_results.pkl', 'wb') as f:
             pickle.dump(results, f)

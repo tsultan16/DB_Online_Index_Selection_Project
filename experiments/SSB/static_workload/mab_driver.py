@@ -28,7 +28,7 @@ def main():
 
 
     # load tpch static workload from a file
-    with open('../../../PostgreSQL/tpch_static_workload_1.pkl', 'rb') as f:
+    with open('../../../PostgreSQL/ssb_static_workload_2.pkl', 'rb') as f:
         workload_dict = pickle.load(f) 
 
     workload_metadata = workload_dict['metadata']
@@ -46,7 +46,7 @@ def main():
         workload = [workload[i*batch_size:(i+1)*batch_size] for i in range(num_batches)]
         
         # instantiate MAB
-        mab = MAB(alpha=20.0, alpha_decay_rate=0.995, vlambda=0.2, creation_time_reduction_factor=3, config_memory_MB=1024*20, qoi_memory=3, max_indexes_per_table=9, max_index_columns=3, include_cols=True, max_include_columns=3)
+        mab = MAB(alpha=20.0, alpha_decay_rate=0.995, vlambda=0.2, creation_time_reduction_factor=3, config_memory_MB=1024*15, qoi_memory=3, max_indexes_per_table=9, max_index_columns=3, include_cols=True, max_include_columns=3)
 
         print(f"Batch processing {n} batches of {batch_size} queries each...")
         for i in range(n):

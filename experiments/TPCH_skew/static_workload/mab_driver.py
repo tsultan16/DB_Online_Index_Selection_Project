@@ -46,7 +46,7 @@ def main():
         workload = [workload[i*batch_size:(i+1)*batch_size] for i in range(num_batches)]
         
         # instantiate MAB
-        mab = MAB(alpha=20.0, alpha_decay_rate=0.995, vlambda=0.2, creation_time_reduction_factor=3, config_memory_MB=1024*20, qoi_memory=3, max_indexes_per_table=9, max_index_columns=3, include_cols=True, max_include_columns=3)
+        mab = MAB(alpha=2.0, alpha_decay_rate=0.995, vlambda=0.5, creation_time_reduction_factor=3, config_memory_MB=1024*14, qoi_memory=3, max_indexes_per_table=9, max_index_columns=3, include_cols=True, max_include_columns=3)
 
         print(f"Batch processing {n} batches of {batch_size} queries each...")
         for i in range(n):
@@ -60,16 +60,6 @@ def main():
         print(f"Total recommendation time: {recommendation_time/1000:.5f} s, Total materialization time: {materialization_time/1000:.2f} s, Total execution time: {execution_time/1000:.2f} s")
         print(f"Total time: {(recommendation_time + materialization_time + execution_time)/1000:5f} s")
 
-        # save experiment results to pickle file
-        results = {}
-        results["batch_recommmendation_time"] = mab.recommendation_time
-        results["batch_materialization_time"] = mab.materialization_time
-        results["batch_execution_time"] = mab.execution_time
-        results["current_configuration"] = mab.current_donfiguration
-        results["indexes_added"] = mab.indexes_added
-        results["indexes_removed"] = mab.indexes_removed
-        with open(f'mab_results.pkl', 'wb') as f:
-            pickle.dump(results, f)
 
     elif mode == 0:
         # execute the workload with no indexes

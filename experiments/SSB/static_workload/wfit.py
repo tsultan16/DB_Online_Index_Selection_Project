@@ -32,7 +32,7 @@ import math
 #from functools import lru_cache
 
 
-DBNAME = 'tpch10'
+DBNAME = 'SSB10'
 
 
 """
@@ -68,7 +68,7 @@ class IBG:
         #print(f"Candidate indexes: {self.C}")
         
         if IBG._pk_indexes is None:
-            self.pk_indexes = tpch_pk_index_objects()
+            self.pk_indexes = ssb_pk_index_objects()
 
         if simple_cost_model is not None:
             self.simple_cost = True
@@ -1432,7 +1432,7 @@ class WFIT:
         # create a new simple cost model for the query
         if self.simple_cost:
             if WFIT._stats_cache is None:
-                tables, pk_columns = get_tpch_schema()
+                tables, pk_columns = get_ssb_schema()
                 table_names = list(tables.keys())
                 stats = {}
                 estimated_rows = {}

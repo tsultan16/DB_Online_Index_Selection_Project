@@ -27,7 +27,7 @@ def main():
         sys.exit(1)
 
     # load tpch static workload from a file
-    with open('../../../PostgreSQL/tpch_static_workload_1.pkl', 'rb') as f:
+    with open('../../../PostgreSQL/ssb_static_workload_2.pkl', 'rb') as f:
         workload_dict = pickle.load(f) 
 
     workload_metadata = workload_dict['metadata']
@@ -58,8 +58,7 @@ def main():
 
             ibg_max_nodes = 150
             
-            wfit = WFIT(max_key_columns=3, include_cols=True, max_include_columns=3, simple_cost=False, enable_stable_partition_locking=enable_stable_partition_locking, max_indexes_per_table=max_indexes_per_table, max_U=max_U, ibg_max_nodes=ibg_max_nodes, doi_max_nodes=doi_max_nodes, max_doi_iters_per_node=max_doi_iters_per_node, normalize_doi=normalize_doi, idxCnt=idxCnt, stateCnt=stateCnt, rand_cnt=rand_cnt, execution_cost_scaling=1e-6,creation_cost_fudge_factor=1e-7)  #1.15e-6
-
+            wfit = WFIT(max_key_columns=3, include_cols=True, max_include_columns=3, simple_cost=False, enable_stable_partition_locking=enable_stable_partition_locking, max_indexes_per_table=max_indexes_per_table, max_U=max_U, ibg_max_nodes=ibg_max_nodes, doi_max_nodes=doi_max_nodes, max_doi_iters_per_node=max_doi_iters_per_node, normalize_doi=normalize_doi, idxCnt=idxCnt, stateCnt=stateCnt, rand_cnt=rand_cnt, execution_cost_scaling=1e-6,creation_cost_fudge_factor=1.15e-3)  #1e-5
 
         else:       
             #wfit = WFIT(max_key_columns=4, include_cols=True, max_include_columns=3, simple_cost=False, max_indexes_per_table=5, max_U=100, ibg_max_nodes=100, doi_max_nodes=50, max_doi_iters_per_node=50, normalize_doi=False, idxCnt=30, stateCnt=500, rand_cnt=200, execution_cost_scaling=1e-5, creation_cost_fudge_factor=0.0) 
@@ -68,7 +67,7 @@ def main():
 
             #wfit = WFIT(max_key_columns=3, include_cols=True, max_include_columns=3, simple_cost=True, enable_stable_partition_locking=enable_stable_partition_locking, max_indexes_per_table=max_indexes_per_table, max_U=max_U, ibg_max_nodes=ibg_max_nodes, doi_max_nodes=doi_max_nodes, max_doi_iters_per_node=max_doi_iters_per_node, normalize_doi=normalize_doi, idxCnt=idxCnt, stateCnt=stateCnt, rand_cnt=rand_cnt, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1e-3, join_column_discount=0.7) 
 
-            wfit = WFIT(max_key_columns=3, include_cols=True, max_include_columns=3, simple_cost=True, enable_stable_partition_locking=enable_stable_partition_locking, max_indexes_per_table=max_indexes_per_table, max_U=max_U, ibg_max_nodes=ibg_max_nodes, doi_max_nodes=doi_max_nodes, max_doi_iters_per_node=max_doi_iters_per_node, normalize_doi=normalize_doi, idxCnt=idxCnt, stateCnt=stateCnt, rand_cnt=rand_cnt, execution_cost_scaling=1e-6, creation_cost_fudge_factor=4e-7, join_column_discount=0.7) 
+            wfit = WFIT(max_key_columns=3, include_cols=True, max_include_columns=3, simple_cost=True, enable_stable_partition_locking=enable_stable_partition_locking, max_indexes_per_table=max_indexes_per_table, max_U=max_U, ibg_max_nodes=ibg_max_nodes, doi_max_nodes=doi_max_nodes, max_doi_iters_per_node=max_doi_iters_per_node, normalize_doi=normalize_doi, idxCnt=idxCnt, stateCnt=stateCnt, rand_cnt=rand_cnt, execution_cost_scaling=1e-6, creation_cost_fudge_factor=1e-4, join_column_discount=0.7) 
 
 
     # process the workload
@@ -116,7 +115,7 @@ def main():
         total_time, execution_time = execute_workload_noIndex(workload[:n], drop_indexes=True, restart_server=True, clear_cache=True)
 
         # split execution time into miniworkload execution time
-        batch_execution_time = [sum(execution_time[i:i+10]) for i in range(0, len(execution_time), 10)]
+        batch_execution_time = [execution_time[i:i+12] for i in range(0, len(execution_time), 12)]
 
         # save experiment results to pickle file
         results = {}
